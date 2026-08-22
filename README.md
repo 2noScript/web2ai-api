@@ -139,7 +139,7 @@ See [docs/auth.md](docs/auth.md) for full details.
 curl -s http://localhost:8088/v1/deepseek/chat/completions \
   -H "Authorization: Bearer <key>" \
   -H "Content-Type: application/json" \
-  -d '{"model": "deepseek-v3", "messages": [{"role": "user", "content": "Hi"}]}'
+  -d '{"model": "deepseek-chat", "messages": [{"role": "user", "content": "Hi"}]}'
 
 # Gemini
 curl -s http://localhost:8088/v1/gemini/chat/completions \
@@ -155,21 +155,22 @@ curl -s http://localhost:8088/v1/gemini/chat/completions \
   -d '{"model": "gemini-3-flash", "messages": [{"role": "user", "content": "What did I just ask?"}]}'
 ```
 
-## Multimodal Vision Support (DeepSeek & Gemini)
+## Multimodal Vision Support
 
-The gateway supports standard **OpenAI Vision format** (`image_url`) for both **DeepSeek** (`deepseek-chat`, `deepseek-reasoner`) and **Gemini** (`gemini-3-flash`, `gemini-3-pro`, `gemini-3-flash-thinking`).
+The gateway natively supports standard **OpenAI Vision format** (`image_url`) across all providers (**DeepSeek** & **Gemini**).
 
-You can provide one or multiple images as either:
+Images can be supplied as:
 - **Direct HTTP/HTTPS Image URLs**
-- **Base64 Data URIs** (`data:image/png;base64,...`, `data:image/jpeg;base64,...`, `data:image/webp;base64,...`, etc.)
+- **Base64 Data URIs** (`data:image/png;base64,...`, `data:image/jpeg;base64,...`, `data:image/webp;base64,...`)
 
-The backend automatically parses the images, uploads them via provider-specific APIs (with PoW challenge solving for DeepSeek or batch upload for Gemini), and injects them into the model generation pipeline.
+The backend automatically parses, uploads concurrently, and injects all images into the chat completion pipeline seamlessly.
 
-### Vision Request Examples
+### Vision Examples
 
-#### 1. DeepSeek Vision Example
+#### 1. Single Image Analysis (URL)
 ```bash
-curl -s http://localhost:8088/v1/deepseek/chat/completions \
+# Replace [provider] with deepseek or gemini (or use /v1/chat/completions)
+curl -s http://localhost:8088/v1/[provider]/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -178,7 +179,7 @@ curl -s http://localhost:8088/v1/deepseek/chat/completions \
       {
         "role": "user",
         "content": [
-          { "type": "text", "text": "What character is in this picture?" },
+          { "type": "text", "text": "What character is depicted in this image?" },
           {
             "type": "image_url",
             "image_url": {
@@ -192,9 +193,9 @@ curl -s http://localhost:8088/v1/deepseek/chat/completions \
   }'
 ```
 
-#### 2. Gemini Vision Example
+#### 2. Multiple Images Comparison (Base64 + URL)
 ```bash
-curl -s http://localhost:8088/v1/gemini/chat/completions \
+curl -s http://localhost:8088/v1/[provider]/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -203,32 +204,7 @@ curl -s http://localhost:8088/v1/gemini/chat/completions \
       {
         "role": "user",
         "content": [
-          { "type": "text", "text": "What is depicted in this image?" },
-          {
-            "type": "image_url",
-            "image_url": {
-              "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png"
-            }
-          }
-        ]
-      }
-    ],
-    "stream": false
-  }'
-```
-
-#### 3. Multiple Images Comparison (Base64 Data URI + URL)
-```bash
-curl -s http://localhost:8088/v1/deepseek/chat/completions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "deepseek-chat",
-    "messages": [
-      {
-        "role": "user",
-        "content": [
-          { "type": "text", "text": "Compare these two images and describe them." },
+          { "type": "text", "text": "Compare these two images and describe them:" },
           {
             "type": "image_url",
             "image_url": { "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png" }
