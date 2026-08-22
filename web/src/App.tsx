@@ -331,7 +331,7 @@ export function App() {
     const activeImages = customImages !== undefined ? customImages : testImages;
 
     let requestContent: any = promptText;
-    if (activeImages && activeImages.length > 0 && profile.type === "gemini") {
+    if (activeImages && activeImages.length > 0) {
       requestContent = [
         { type: "text", text: promptText },
         ...activeImages.map((img) => ({
@@ -1161,14 +1161,14 @@ export function App() {
                       onChange={handleImageUpload}
                       className="hidden"
                     />
-                    {testModalProfile.type === "gemini" && (
+                    {(testModalProfile.type === "gemini" || testModalProfile.type === "deepseek") && (
                       <Button
                         type="button"
                         variant={testImages.length > 0 ? "default" : "outline"}
                         size="sm"
                         onClick={() => fileInputRef.current?.click()}
                         className={`gap-1.5 shrink-0 h-9 ${testImages.length === 0 ? "border-dashed" : ""}`}
-                        title="Attach images for Gemini Vision test (multiple supported)"
+                        title="Attach images for Vision test (multiple supported)"
                       >
                         <ImageIcon className="w-3.5 h-3.5" />
                         <span className="text-xs">
@@ -1203,12 +1203,12 @@ export function App() {
                     </Button>
                   </div>
 
-                  {testImages.length > 0 && testModalProfile.type === "gemini" && (
+                  {testImages.length > 0 && (
                     <div className="p-2.5 bg-muted/40 rounded-lg border border-border mt-2 space-y-2">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-1.5">
                           <Badge variant="outline" className="text-[10px] text-primary border-primary/30 py-0">
-                            Gemini Vision ({testImages.length} {testImages.length > 1 ? "images" : "image"})
+                            {testModalProfile.type === "deepseek" ? "DeepSeek Vision" : "Gemini Vision"} ({testImages.length} {testImages.length > 1 ? "images" : "image"})
                           </Badge>
                           <span className="text-[11px] text-muted-foreground">Attached in OpenAI Vision format</span>
                         </div>

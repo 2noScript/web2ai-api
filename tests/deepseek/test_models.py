@@ -15,5 +15,6 @@ def test_list_models():
     assert "data" in data
     assert isinstance(data["data"], list)
     model_ids = [m["id"] for m in data["data"]]
-    assert "deepseek-v3" in model_ids
-    assert "deepseek-r1" in model_ids
+    assert "deepseek-chat" in model_ids
+    assert "deepseek-reasoner" in model_ids
+

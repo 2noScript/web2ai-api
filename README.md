@@ -155,19 +155,44 @@ curl -s http://localhost:8088/v1/gemini/chat/completions \
   -d '{"model": "gemini-3-flash", "messages": [{"role": "user", "content": "What did I just ask?"}]}'
 ```
 
-## Multimodal Vision Support (Gemini)
+## Multimodal Vision Support (DeepSeek & Gemini)
 
-The gateway supports standard **OpenAI Vision format** (`image_url`) for all Gemini models (e.g., `gemini-3-flash`, `gemini-3-pro`, `gemini-3-flash-thinking`).
+The gateway supports standard **OpenAI Vision format** (`image_url`) for both **DeepSeek** (`deepseek-chat`, `deepseek-reasoner`) and **Gemini** (`gemini-3-flash`, `gemini-3-pro`, `gemini-3-flash-thinking`).
 
 You can provide one or multiple images as either:
 - **Direct HTTP/HTTPS Image URLs**
 - **Base64 Data URIs** (`data:image/png;base64,...`, `data:image/jpeg;base64,...`, `data:image/webp;base64,...`, etc.)
 
-The backend automatically parses the images, uploads them to Google's server concurrently, and injects them into the model generation pipeline.
+The backend automatically parses the images, uploads them via provider-specific APIs (with PoW challenge solving for DeepSeek or batch upload for Gemini), and injects them into the model generation pipeline.
 
 ### Vision Request Examples
 
-#### 1. Single Image Analysis (Image URL)
+#### 1. DeepSeek Vision Example
+```bash
+curl -s http://localhost:8088/v1/deepseek/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-chat",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "What character is in this picture?" },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png"
+            }
+          }
+        ]
+      }
+    ],
+    "stream": false
+  }'
+```
+
+#### 2. Gemini Vision Example
 ```bash
 curl -s http://localhost:8088/v1/gemini/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
@@ -192,21 +217,21 @@ curl -s http://localhost:8088/v1/gemini/chat/completions \
   }'
 ```
 
-#### 2. Multiple Images Comparison (Base64 Data URI + URL)
+#### 3. Multiple Images Comparison (Base64 Data URI + URL)
 ```bash
-curl -s http://localhost:8088/v1/gemini/chat/completions \
+curl -s http://localhost:8088/v1/deepseek/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gemini-3-flash",
+    "model": "deepseek-chat",
     "messages": [
       {
         "role": "user",
         "content": [
-          { "type": "text", "text": "Compare these two images and point out the key differences." },
+          { "type": "text", "text": "Compare these two images and describe them." },
           {
             "type": "image_url",
-            "image_url": { "url": "https://example.com/diagram_v1.png" }
+            "image_url": { "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png" }
           },
           {
             "type": "image_url",
@@ -218,6 +243,4 @@ curl -s http://localhost:8088/v1/gemini/chat/completions \
     "stream": false
   }'
 ```
-
-> **Note**: Vision features require an authenticated Gemini profile. Ensure your Gemini cookie containing valid `__Secure-1PSID` and `__Secure-1PSIDTS` is configured via `data/profiles.json` or the Web UI dashboard.
 

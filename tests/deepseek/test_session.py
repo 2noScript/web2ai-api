@@ -15,7 +15,7 @@ class TestDeepSeekRealSession:
         r1 = client.post(
             "/v1/deepseek/chat/completions",
             json={
-                "model": "deepseek-v3",
+                "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": "My secret code is BETA-77"}],
                 "stream": False,
             },
@@ -29,7 +29,7 @@ class TestDeepSeekRealSession:
         r2 = client.post(
             "/v1/deepseek/chat/completions",
             json={
-                "model": "deepseek-v3",
+                "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": "What is my secret code?"}],
                 "stream": False,
             },
@@ -47,7 +47,7 @@ class TestDeepSeekRealSession:
         r_b = client.post(
             "/v1/deepseek/chat/completions",
             json={
-                "model": "deepseek-v3",
+                "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": "What is my secret code?"}],
                 "stream": False,
             },
@@ -65,7 +65,7 @@ class TestDeepSeekRealSession:
         r = client.post(
             "/v1/deepseek/chat/completions",
             json={
-                "model": "deepseek-v3",
+                "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": "Say hello in 3 words."}],
                 "stream": True,
             },

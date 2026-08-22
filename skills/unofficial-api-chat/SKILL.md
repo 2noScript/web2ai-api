@@ -195,12 +195,13 @@ for chunk in response:
 
 ### DeepSeek
 
-| Model | Thinking |
-|---|---|
-| `deepseek-v3` | No |
-| `deepseek-r1` | Yes |
-| `deepseek-v4` | No |
-| `deepseek-r4` | Yes |
+| Model | Thinking | Notes |
+|---|---|---|
+| `deepseek-chat` | No | DeepSeek-V3 standard model |
+| `deepseek-v3` | No | Alias for `deepseek-chat` |
+| `deepseek-reasoner` | Yes | DeepSeek-R1 extended thinking model |
+| `deepseek-r1` | Yes | Alias for `deepseek-reasoner` |
+
 
 ### Gemini
 

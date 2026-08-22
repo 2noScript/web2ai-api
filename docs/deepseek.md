@@ -20,13 +20,16 @@ Or use **Cookie-Editor** extension to export all cookies at once.
 
 | Model | Description |
 |---|---|
-| `deepseek-v3` | Default model without extended thinking |
-| `deepseek-r1` | Reasoning model with extended thinking |
-
+| `deepseek-chat` | Default standard chat model (DeepSeek-V3) |
+| `deepseek-reasoner` | Reasoning model with DeepThink extended thinking (DeepSeek-R1) |
 
 ## Endpoints
 
-DeepSeek has no provider-specific endpoints. Only the [common OpenAI-compatible endpoints](../README.md#common-openai-compatible) (`/models`, `/chat/completions`).
+DeepSeek supports the standard [common OpenAI-compatible endpoints](../README.md#common-openai-compatible) (`/models`, `/chat/completions`).
+
+### Multimodal Vision Support
+
+You can pass images in OpenAI Vision format via `image_url` (both direct URLs and Base64 Data URIs). DeepSeek automatically uploads the files with PoW solving and switches to vision recognition mode.
 
 ### Response — Additional fields
 
@@ -40,27 +43,38 @@ DeepSeek has no provider-specific endpoints. Only the [common OpenAI-compatible 
 
 ```bash
 # Basic chat
-curl -s http://localhost:8000/v1/deepseek/chat/completions \
+curl -s http://localhost:8088/v1/deepseek/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-v3",
+    "model": "deepseek-chat",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 
 # Reasoning model (returns reasoning_content)
-curl -s http://localhost:8000/v1/deepseek/chat/completions \
+curl -s http://localhost:8088/v1/deepseek/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-r1",
+    "model": "deepseek-reasoner",
     "messages": [{"role": "user", "content": "Solve 2+2"}]
   }'
 
-# Streaming
-curl -s -N http://localhost:8000/v1/deepseek/chat/completions \
+# Multimodal Vision analysis
+curl -s http://localhost:8088/v1/deepseek/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-v3",
-    "messages": [{"role": "user", "content": "Count to 5"}],
-    "stream": true
+    "model": "deepseek-chat",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "What is in this picture?" },
+          { "type": "image_url", "image_url": { "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png" } }
+        ]
+      }
+    ],
+    "stream": false
   }'
 ```

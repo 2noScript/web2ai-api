@@ -25,7 +25,7 @@ class DeepSeekStrategy(BaseProviderStrategy):
     ) -> tuple[str, str]:
         chat = await asyncio.to_thread(client.new_session, **session_kwargs)
         session_kwargs["chat"] = chat
-        result = await asyncio.to_thread(chat.send_message, prompt, model=model)
+        result = await asyncio.to_thread(chat.send_message, prompt, model=model, files=files)
 
         if not result.get("ok"):
             err_msg = result.get("content", "Unknown error")
@@ -35,7 +35,7 @@ class DeepSeekStrategy(BaseProviderStrategy):
 
         content = result.get("content", {})
         if isinstance(content, dict):
-            return content.get("response", ""), content.get("thinking", "")
+            return content.get("response", ""), content.get("thought", "")
         return str(content), ""
 
     async def execute_stream(
@@ -46,10 +46,9 @@ class DeepSeekStrategy(BaseProviderStrategy):
         queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
-
         def run_stream() -> dict:
             try:
-                for event_type, content in chat.send_message_stream(prompt, model=model):
+                for event_type, content in chat.send_message_stream(prompt, model=model, files=files):
                     if event_type == "error":
                         return {"ok": False, "content": content}
                     elif event_type in ("content", "thought"):
