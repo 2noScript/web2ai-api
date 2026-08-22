@@ -21,7 +21,9 @@ import {
   Copy,
   Check,
   Code,
-  MessageSquare
+  MessageSquare,
+  Image as ImageIcon,
+  X
 } from "lucide-react";
 
 
@@ -121,6 +123,9 @@ export function App() {
   const [testModalResult, setTestModalResult] = useState<TestResult | null>(null);
   const [showRawJson, setShowRawJson] = useState(false);
   const [copiedResponse, setCopiedResponse] = useState(false);
+  const [testImageBase64, setTestImageBase64] = useState<string | null>(null);
+  const [testImageName, setTestImageName] = useState<string | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
 
 
@@ -262,7 +267,35 @@ export function App() {
     }
   };
 
-  const handleTestProfile = async (profile: Profile, customMessage?: string, customModel?: string) => {
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      alert("Please select a valid image file (PNG, JPG, WEBP, GIF, etc.).");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        setTestImageBase64(reader.result);
+        setTestImageName(file.name);
+        if (
+          testModalPrompt === "Hello! Reply with 'OK' if you can read this." ||
+          testModalPrompt === "Hello! Introduce yourself in one short sentence."
+        ) {
+          setTestModalPrompt("Describe what you see in this image in detail.");
+        }
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleTestProfile = async (
+    profile: Profile,
+    customMessage?: string,
+    customModel?: string,
+    customImage?: string | null
+  ) => {
     setTestingProfileId(profile.id);
     setTestModalLoading(true);
     setCopiedResponse(false);
@@ -270,6 +303,14 @@ export function App() {
     const defaultModel = profile.type === "deepseek" ? "deepseek-chat" : "gemini-3-flash";
     const selectedModel = customModel || testModel || defaultModel;
     const promptText = customMessage || "Hello! Reply with 'OK' if you can read this.";
+    const activeImage = customImage !== undefined ? customImage : testImageBase64;
+
+    const requestContent = activeImage && profile.type === "gemini"
+      ? [
+          { type: "text", text: promptText },
+          { type: "image_url", image_url: { url: activeImage } }
+        ]
+      : promptText;
 
     try {
       const res = await fetch(`/v1/${profile.type}/chat/completions`, {
@@ -281,7 +322,7 @@ export function App() {
         },
         body: JSON.stringify({
           model: selectedModel,
-          messages: [{ role: "user", content: promptText }],
+          messages: [{ role: "user", content: requestContent }],
           stream: false
         }),
       });
@@ -351,10 +392,13 @@ export function App() {
     setTestModel(initialModel);
     setShowRawJson(false);
     setCopiedResponse(false);
+    setTestImageBase64(null);
+    setTestImageName(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
     const existing = testResults[profile.id];
     setTestModalResult(existing || null);
     if (!existing) {
-      handleTestProfile(profile, testModalPrompt, initialModel);
+      handleTestProfile(profile, testModalPrompt, initialModel, null);
     }
   };
 
@@ -810,12 +854,12 @@ export function App() {
       {/* Add Profile Modal */}
       {showAddProfileModal && (
         <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <Card className="max-w-md w-full p-2">
-            <CardHeader>
+          <Card className="max-w-lg w-full p-2 max-h-[90vh] flex flex-col shadow-2xl border-border">
+            <CardHeader className="pb-3 border-b border-border">
               <CardTitle className="text-lg">Add Provider Profile</CardTitle>
               <CardDescription>Configure credentials for DeepSeek or Gemini</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="overflow-y-auto flex-1 pt-4 pr-3">
               <form onSubmit={handleCreateProfile} className="space-y-4">
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1.5">Provider Type</label>
@@ -845,15 +889,19 @@ export function App() {
                     {newProfileType === "deepseek" ? "DeepSeek Auth Token (Bearer token)" : "Gemini Cookie Header String"}
                   </label>
                   <Textarea
-                    rows={3}
-                    placeholder={newProfileType === "deepseek" ? "Bearer M3KFWf..." : "SAPISID=...; __Secure-1PSID=..."}
+                    rows={4}
+                    placeholder={newProfileType === "deepseek" ? "Bearer M3KFWf..." : "SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=..."}
                     value={newProfileCredential}
                     onChange={(e) => setNewProfileCredential(e.target.value)}
+                    className="max-h-48 min-h-[110px] overflow-y-auto font-mono text-xs break-all resize-y"
                     required
                   />
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    {newProfileType === "gemini" ? "Tip: Paste the full cookie header containing __Secure-1PSID and __Secure-1PSIDTS." : "Tip: Paste your DeepSeek auth token."}
+                  </p>
                 </div>
 
-                <div className="flex items-center justify-between pt-2">
+                <div className="flex items-center justify-between pt-3 border-t border-border/50">
                   <div className="flex items-center gap-2">
                     <Switch
                       checked={newProfileIsActive}
@@ -880,12 +928,12 @@ export function App() {
       {/* Edit Profile Modal */}
       {editingProfile && (
         <div className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <Card className="max-w-md w-full p-2">
-            <CardHeader>
+          <Card className="max-w-lg w-full p-2 max-h-[90vh] flex flex-col shadow-2xl border-border">
+            <CardHeader className="pb-3 border-b border-border">
               <CardTitle className="text-lg">Edit Profile</CardTitle>
               <CardDescription>ID: {editingProfile.id}</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="overflow-y-auto flex-1 pt-4 pr-3">
               <form onSubmit={handleUpdateProfile} className="space-y-4">
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1.5">Profile Name</label>
@@ -902,14 +950,18 @@ export function App() {
                     Update {editingProfile.type === "deepseek" ? "Token" : "Cookie"} (Leave blank to keep unchanged)
                   </label>
                   <Textarea
-                    rows={3}
+                    rows={4}
                     placeholder="Paste new credential to update..."
                     value={editCredential}
                     onChange={(e) => setEditCredential(e.target.value)}
+                    className="max-h-48 min-h-[110px] overflow-y-auto font-mono text-xs break-all resize-y"
                   />
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    {editingProfile.type === "gemini" ? "Tip: Paste the full cookie header containing __Secure-1PSID and __Secure-1PSIDTS." : "Tip: Paste your new DeepSeek token."}
+                  </p>
                 </div>
 
-                <div className="flex items-center justify-between pt-2">
+                <div className="flex items-center justify-between pt-3 border-t border-border/50">
                   <div className="flex items-center gap-2">
                     <Switch
                       checked={editIsActive}
@@ -1061,14 +1113,43 @@ export function App() {
                       >
                         Intro
                       </button>
+                      {testModalProfile.type === "gemini" && (
+                        <button
+                          type="button"
+                          onClick={() => setTestModalPrompt("Describe what you see in this image in detail.")}
+                          className="text-[11px] bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 rounded-md hover:bg-primary/20 transition cursor-pointer font-medium"
+                        >
+                          Vision
+                        </button>
+                      )}
                     </div>
                   </div>
                   <div className="flex gap-2">
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      accept="image/*"
+                      onChange={handleImageUpload}
+                      className="hidden"
+                    />
+                    {testModalProfile.type === "gemini" && (
+                      <Button
+                        type="button"
+                        variant={testImageBase64 ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => fileInputRef.current?.click()}
+                        className={`gap-1.5 shrink-0 h-9 ${!testImageBase64 ? "border-dashed" : ""}`}
+                        title="Attach image for Gemini Vision test"
+                      >
+                        <ImageIcon className="w-3.5 h-3.5" />
+                        <span className="text-xs">{testImageBase64 ? "Change Image" : "Attach Image"}</span>
+                      </Button>
+                    )}
                     <Input
                       type="text"
                       value={testModalPrompt}
                       onChange={(e) => setTestModalPrompt(e.target.value)}
-                      placeholder="Enter test prompt..."
+                      placeholder={testImageBase64 ? "Ask something about the image..." : "Enter test prompt..."}
                       className="text-sm font-sans"
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !testModalLoading) {
@@ -1090,6 +1171,39 @@ export function App() {
                       <span>{testModalLoading ? "Testing..." : "Run Test"}</span>
                     </Button>
                   </div>
+
+                  {testImageBase64 && testModalProfile.type === "gemini" && (
+                    <div className="flex items-center justify-between p-2 bg-muted/40 rounded-lg border border-border mt-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <img
+                          src={testImageBase64}
+                          alt="Attached Preview"
+                          className="w-9 h-9 object-cover rounded-md border border-border shadow-sm shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <Badge variant="outline" className="text-[10px] text-primary border-primary/30 py-0">Gemini Vision</Badge>
+                            <span className="text-xs font-medium text-foreground truncate max-w-[220px]">{testImageName || "Attached Image"}</span>
+                          </div>
+                          <p className="text-[10px] text-muted-foreground">Payload formatted to OpenAI Vision standard</p>
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setTestImageBase64(null);
+                          setTestImageName(null);
+                          if (fileInputRef.current) fileInputRef.current.value = "";
+                        }}
+                        className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        title="Remove attached image"
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
 

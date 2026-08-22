@@ -21,7 +21,7 @@ class DeepSeekStrategy(BaseProviderStrategy):
         return await asyncio.to_thread(DeepSeek, auth_token)
 
     async def execute_chat(
-        self, client: Any, prompt: str, model: str, session_kwargs: dict
+        self, client: Any, prompt: str, model: str, session_kwargs: dict, files: list[str] | None = None
     ) -> tuple[str, str]:
         chat = await asyncio.to_thread(client.new_session, **session_kwargs)
         session_kwargs["chat"] = chat
@@ -39,7 +39,7 @@ class DeepSeekStrategy(BaseProviderStrategy):
         return str(content), ""
 
     async def execute_stream(
-        self, client: Any, prompt: str, model: str, session_kwargs: dict
+        self, client: Any, prompt: str, model: str, session_kwargs: dict, files: list[str] | None = None
     ) -> AsyncGenerator[str, None]:
         chat = await asyncio.to_thread(client.new_session, **session_kwargs)
         session_kwargs["chat"] = chat

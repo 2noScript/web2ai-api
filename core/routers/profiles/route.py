@@ -106,6 +106,9 @@ async def get_profile_by_id(profile_id: str):
     return profile
 
 
+from core.routers.gemini.pool import gemini_pool
+
+
 @router.put("/{profile_id}", response_model=ProfileResponse, summary="Update profile by ID")
 async def update_profile_by_id(profile_id: str, body: ProfileUpdateRequest):
     existing = await asyncio.to_thread(get_profile, profile_id)
@@ -129,6 +132,7 @@ async def update_profile_by_id(profile_id: str, body: ProfileUpdateRequest):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Profile with ID '{profile_id}' not found."
             )
+        await gemini_pool.remove_client(profile_id)
         return updated
     except HTTPException:
         raise
@@ -147,6 +151,7 @@ async def delete_profile_by_id(profile_id: str):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Profile with ID '{profile_id}' not found."
         )
+    await gemini_pool.remove_client(profile_id)
     return ProfileDeleteResponse(status="deleted", id=profile_id)
 
 

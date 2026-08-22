@@ -27,21 +27,23 @@ class GeminiStrategy(BaseProviderStrategy):
         return client
 
     async def execute_chat(
-        self, client: Any, prompt: str, model: str, session_kwargs: dict
+        self, client: Any, prompt: str, model: str, session_kwargs: dict, files: list[str] | None = None
     ) -> tuple[str, str]:
         chat = session_kwargs.get("chat")
         if not chat:
             chat = ChatSession(geminiclient=client)
-        output = await client.generate_content(prompt=prompt, model=model, chat=chat)
+        extra_kwargs = {"files": files} if files else {}
+        output = await client.generate_content(prompt=prompt, model=model, chat=chat, **extra_kwargs)
         return output.text or "", output.thoughts or ""
 
     async def execute_stream(
-        self, client: Any, prompt: str, model: str, session_kwargs: dict
+        self, client: Any, prompt: str, model: str, session_kwargs: dict, files: list[str] | None = None
     ) -> AsyncGenerator[str, None]:
         chat = session_kwargs.get("chat")
         if not chat:
             chat = ChatSession(geminiclient=client)
-        gen = client.generate_content_stream(prompt=prompt, model=model, chat=chat)
+        extra_kwargs = {"files": files} if files else {}
+        gen = client.generate_content_stream(prompt=prompt, model=model, chat=chat, **extra_kwargs)
         async for chunk in gen:
             delta = chunk.text_delta
             if delta:

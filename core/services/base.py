@@ -18,7 +18,7 @@ class BaseProviderStrategy(ABC):
 
     @abstractmethod
     async def execute_chat(
-        self, client: Any, prompt: str, model: str, session_kwargs: dict
+        self, client: Any, prompt: str, model: str, session_kwargs: dict, files: list[str] | None = None
     ) -> tuple[str, str]:
         """
         Execute non-streaming chat request.
@@ -28,7 +28,7 @@ class BaseProviderStrategy(ABC):
 
     @abstractmethod
     def execute_stream(
-        self, client: Any, prompt: str, model: str, session_kwargs: dict
+        self, client: Any, prompt: str, model: str, session_kwargs: dict, files: list[str] | None = None
     ) -> AsyncGenerator[str, None]:
         """
         Execute streaming chat request.
