@@ -28,13 +28,14 @@
 | `/v1/gemini/models` | GET | List available models |
 | `/v1/gemini/chat/completions` | POST | Chat completions (streaming supported) |
 
-### Chat Completions — Additional fields
+### Chat Completions — Multimodal Vision Support
 
-Beyond the common OpenAI-compatible fields, Gemini chat completions support:
+Gemini chat completions natively support standard **OpenAI Vision format** (`image_url`) as well as direct `files`:
 
-| Field | Type | Required | Description |
+| Field / Format | Type | Required | Description |
 |---|---|---|---|
-| `files` | array | ❌ | File paths to attach (images, PDFs, etc.) |
+| `messages[].content[].image_url` | object / string | ❌ | Image URL or Base64 Data URI (`data:image/png;base64,...`) |
+| `files` | array | ❌ | Local file paths to attach (images, PDFs, etc.) |
 
 > Thinking models return `reasoning_content` in `choices[].message`.
 
@@ -42,31 +43,45 @@ Beyond the common OpenAI-compatible fields, Gemini chat completions support:
 
 ```bash
 # Basic chat
-curl -s http://localhost:8000/v1/gemini/chat/completions \
+curl -s http://localhost:8088/v1/gemini/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <key>" \
   -d '{
     "model": "gemini-3-flash",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 
 # Streaming
-curl -s http://localhost:8000/v1/gemini/chat/completions \
+curl -s http://localhost:8088/v1/gemini/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <key>" \
   -d '{
     "model": "gemini-3-flash",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
   }'
 
-# Attach files
-curl -s http://localhost:8000/v1/gemini/chat/completions \
+# Multimodal Vision (OpenAI format - Single / Multiple Images)
+curl -s http://localhost:8088/v1/gemini/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <key>" \
   -d '{
     "model": "gemini-3-flash",
-    "messages": [{"role": "user", "content": "What is in this image?"}],
-    "files": ["/path/to/image.jpg"]
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "Describe the contents of this image." },
+          {
+            "type": "image_url",
+            "image_url": { "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png" }
+          }
+        ]
+      }
+    ]
   }'
 
 # List models
-curl -s http://localhost:8000/v1/gemini/models
+curl -s http://localhost:8088/v1/gemini/models \
+  -H "Authorization: Bearer <key>"
 ```

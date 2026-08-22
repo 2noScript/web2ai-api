@@ -67,6 +67,12 @@ interface TestResult {
 }
 
 
+interface UploadedImage {
+  id: string;
+  base64: string;
+  name: string;
+}
+
 interface ApiKey {
   id: string;
   name: string;
@@ -123,8 +129,7 @@ export function App() {
   const [testModalResult, setTestModalResult] = useState<TestResult | null>(null);
   const [showRawJson, setShowRawJson] = useState(false);
   const [copiedResponse, setCopiedResponse] = useState(false);
-  const [testImageBase64, setTestImageBase64] = useState<string | null>(null);
-  const [testImageName, setTestImageName] = useState<string | null>(null);
+  const [testImages, setTestImages] = useState<UploadedImage[]>([]);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
 
@@ -268,33 +273,53 @@ export function App() {
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      alert("Please select a valid image file (PNG, JPG, WEBP, GIF, etc.).");
-      return;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const validFiles = files.filter((f) => f.type.startsWith("image/"));
+    if (validFiles.length < files.length) {
+      alert("Some non-image files were skipped. Only PNG, JPG, WEBP, GIF, etc. are supported.");
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        setTestImageBase64(reader.result);
-        setTestImageName(file.name);
-        if (
-          testModalPrompt === "Hello! Reply with 'OK' if you can read this." ||
-          testModalPrompt === "Hello! Introduce yourself in one short sentence."
-        ) {
-          setTestModalPrompt("Describe what you see in this image in detail.");
+    if (!validFiles.length) return;
+
+    validFiles.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          setTestImages((prev) => [
+            ...prev,
+            {
+              id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              base64: reader.result as string,
+              name: file.name,
+            },
+          ]);
         }
-      }
-    };
-    reader.readAsDataURL(file);
+      };
+      reader.readAsDataURL(file);
+    });
+
+    if (
+      testModalPrompt === "Hello! Reply with 'OK' if you can read this." ||
+      testModalPrompt === "Hello! Introduce yourself in one short sentence."
+    ) {
+      setTestModalPrompt(
+        validFiles.length > 1
+          ? "Describe and compare these images in detail."
+          : "Describe what you see in this image in detail."
+      );
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleRemoveImage = (id: string) => {
+    setTestImages((prev) => prev.filter((img) => img.id !== id));
   };
 
   const handleTestProfile = async (
     profile: Profile,
     customMessage?: string,
     customModel?: string,
-    customImage?: string | null
+    customImages?: UploadedImage[]
   ) => {
     setTestingProfileId(profile.id);
     setTestModalLoading(true);
@@ -303,14 +328,18 @@ export function App() {
     const defaultModel = profile.type === "deepseek" ? "deepseek-chat" : "gemini-3-flash";
     const selectedModel = customModel || testModel || defaultModel;
     const promptText = customMessage || "Hello! Reply with 'OK' if you can read this.";
-    const activeImage = customImage !== undefined ? customImage : testImageBase64;
+    const activeImages = customImages !== undefined ? customImages : testImages;
 
-    const requestContent = activeImage && profile.type === "gemini"
-      ? [
-          { type: "text", text: promptText },
-          { type: "image_url", image_url: { url: activeImage } }
-        ]
-      : promptText;
+    let requestContent: any = promptText;
+    if (activeImages && activeImages.length > 0 && profile.type === "gemini") {
+      requestContent = [
+        { type: "text", text: promptText },
+        ...activeImages.map((img) => ({
+          type: "image_url",
+          image_url: { url: img.base64 },
+        })),
+      ];
+    }
 
     try {
       const res = await fetch(`/v1/${profile.type}/chat/completions`, {
@@ -392,13 +421,12 @@ export function App() {
     setTestModel(initialModel);
     setShowRawJson(false);
     setCopiedResponse(false);
-    setTestImageBase64(null);
-    setTestImageName(null);
+    setTestImages([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
     const existing = testResults[profile.id];
     setTestModalResult(existing || null);
     if (!existing) {
-      handleTestProfile(profile, testModalPrompt, initialModel, null);
+      handleTestProfile(profile, testModalPrompt, initialModel, []);
     }
   };
 
@@ -1129,27 +1157,30 @@ export function App() {
                       type="file"
                       ref={fileInputRef}
                       accept="image/*"
+                      multiple
                       onChange={handleImageUpload}
                       className="hidden"
                     />
                     {testModalProfile.type === "gemini" && (
                       <Button
                         type="button"
-                        variant={testImageBase64 ? "default" : "outline"}
+                        variant={testImages.length > 0 ? "default" : "outline"}
                         size="sm"
                         onClick={() => fileInputRef.current?.click()}
-                        className={`gap-1.5 shrink-0 h-9 ${!testImageBase64 ? "border-dashed" : ""}`}
-                        title="Attach image for Gemini Vision test"
+                        className={`gap-1.5 shrink-0 h-9 ${testImages.length === 0 ? "border-dashed" : ""}`}
+                        title="Attach images for Gemini Vision test (multiple supported)"
                       >
                         <ImageIcon className="w-3.5 h-3.5" />
-                        <span className="text-xs">{testImageBase64 ? "Change Image" : "Attach Image"}</span>
+                        <span className="text-xs">
+                          {testImages.length > 0 ? `+ Add (${testImages.length})` : "Attach Images"}
+                        </span>
                       </Button>
                     )}
                     <Input
                       type="text"
                       value={testModalPrompt}
                       onChange={(e) => setTestModalPrompt(e.target.value)}
-                      placeholder={testImageBase64 ? "Ask something about the image..." : "Enter test prompt..."}
+                      placeholder={testImages.length > 0 ? "Ask something about the images..." : "Enter test prompt..."}
                       className="text-sm font-sans"
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !testModalLoading) {
@@ -1172,36 +1203,64 @@ export function App() {
                     </Button>
                   </div>
 
-                  {testImageBase64 && testModalProfile.type === "gemini" && (
-                    <div className="flex items-center justify-between p-2 bg-muted/40 rounded-lg border border-border mt-2">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <img
-                          src={testImageBase64}
-                          alt="Attached Preview"
-                          className="w-9 h-9 object-cover rounded-md border border-border shadow-sm shrink-0"
-                        />
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <Badge variant="outline" className="text-[10px] text-primary border-primary/30 py-0">Gemini Vision</Badge>
-                            <span className="text-xs font-medium text-foreground truncate max-w-[220px]">{testImageName || "Attached Image"}</span>
-                          </div>
-                          <p className="text-[10px] text-muted-foreground">Payload formatted to OpenAI Vision standard</p>
+                  {testImages.length > 0 && testModalProfile.type === "gemini" && (
+                    <div className="p-2.5 bg-muted/40 rounded-lg border border-border mt-2 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <Badge variant="outline" className="text-[10px] text-primary border-primary/30 py-0">
+                            Gemini Vision ({testImages.length} {testImages.length > 1 ? "images" : "image"})
+                          </Badge>
+                          <span className="text-[11px] text-muted-foreground">Attached in OpenAI Vision format</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="text-[11px] text-primary hover:underline font-medium cursor-pointer"
+                          >
+                            + Add more
+                          </button>
+                          <span className="text-muted-foreground text-xs">•</span>
+                          <button
+                            type="button"
+                            onClick={() => setTestImages([])}
+                            className="text-[11px] text-destructive hover:underline font-medium cursor-pointer"
+                          >
+                            Clear all
+                          </button>
                         </div>
                       </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setTestImageBase64(null);
-                          setTestImageName(null);
-                          if (fileInputRef.current) fileInputRef.current.value = "";
-                        }}
-                        className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                        title="Remove attached image"
-                      >
-                        <X className="w-4 h-4" />
-                      </Button>
+
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {testImages.map((img, idx) => (
+                          <div
+                            key={img.id}
+                            className="group relative flex items-center gap-2 p-1.5 bg-background border border-border rounded-lg shadow-xs pr-2"
+                          >
+                            <img
+                              src={img.base64}
+                              alt={img.name}
+                              className="w-8 h-8 object-cover rounded-md border border-border/60"
+                            />
+                            <div className="max-w-[130px] min-w-0">
+                              <p className="text-[11px] font-medium truncate text-foreground leading-tight">
+                                {img.name}
+                              </p>
+                              <p className="text-[9px] text-muted-foreground">Image #{idx + 1}</p>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleRemoveImage(img.id)}
+                              className="h-5 w-5 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-full"
+                              title="Remove image"
+                            >
+                              <X className="w-3 h-3" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>

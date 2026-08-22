@@ -109,3 +109,23 @@ def test_gemini_vision_chat_completion():
         assert len(captured_files) == 1
         # After completion, temp file should have been cleaned up
         assert not os.path.exists(captured_files[0])
+
+
+@pytest.mark.asyncio
+async def test_multiple_images_extraction():
+    png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    content = [
+        {"type": "text", "text": "Compare these two images"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png_b64}"}},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png_b64}"}},
+        {"type": "image_url", "image_url": f"data:image/png;base64,{png_b64}"},
+    ]
+
+    files = await extract_images(content)
+    assert len(files) == 3
+    for f in files:
+        assert os.path.exists(f)
+    cleanup_files(files)
+    for f in files:
+        assert not os.path.exists(f)
+

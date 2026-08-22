@@ -154,3 +154,70 @@ curl -s http://localhost:8088/v1/gemini/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "gemini-3-flash", "messages": [{"role": "user", "content": "What did I just ask?"}]}'
 ```
+
+## Multimodal Vision Support (Gemini)
+
+The gateway supports standard **OpenAI Vision format** (`image_url`) for all Gemini models (e.g., `gemini-3-flash`, `gemini-3-pro`, `gemini-3-flash-thinking`).
+
+You can provide one or multiple images as either:
+- **Direct HTTP/HTTPS Image URLs**
+- **Base64 Data URIs** (`data:image/png;base64,...`, `data:image/jpeg;base64,...`, `data:image/webp;base64,...`, etc.)
+
+The backend automatically parses the images, uploads them to Google's server concurrently, and injects them into the model generation pipeline.
+
+### Vision Request Examples
+
+#### 1. Single Image Analysis (Image URL)
+```bash
+curl -s http://localhost:8088/v1/gemini/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "What is depicted in this image?" },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png"
+            }
+          }
+        ]
+      }
+    ],
+    "stream": false
+  }'
+```
+
+#### 2. Multiple Images Comparison (Base64 Data URI + URL)
+```bash
+curl -s http://localhost:8088/v1/gemini/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "Compare these two images and point out the key differences." },
+          {
+            "type": "image_url",
+            "image_url": { "url": "https://example.com/diagram_v1.png" }
+          },
+          {
+            "type": "image_url",
+            "image_url": { "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" }
+          }
+        ]
+      }
+    ],
+    "stream": false
+  }'
+```
+
+> **Note**: Vision features require an authenticated Gemini profile. Ensure your Gemini cookie containing valid `__Secure-1PSID` and `__Secure-1PSIDTS` is configured via `data/profiles.json` or the Web UI dashboard.
+
