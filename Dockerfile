@@ -5,6 +5,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY deepseek-api/ deepseek-api/
 COPY Gemini-API/ Gemini-API/
+COPY metaai-api/ metaai-api/
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.1.0
 RUN uv sync --frozen --no-dev
 
@@ -14,11 +15,13 @@ COPY --from=builder /app/.venv /app/.venv
 COPY core/ core/
 COPY deepseek-api/ deepseek-api/
 COPY Gemini-API/ Gemini-API/
+COPY metaai-api/ metaai-api/
 COPY web/dist/ web/dist/
 
-# Persistent data directory for profiles, API keys, and session storage
+# Persistent data directory for profiles, API keys, and SQLite database
 RUN mkdir -p /data
 ENV UNOFFICIAL_API_DATA_DIR=/data
+ENV LIGHTPANDA_CDP_URL=http://lightpanda:9222
 
 ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8088
