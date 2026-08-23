@@ -23,6 +23,7 @@ import {
   Code,
   MessageSquare,
   Image as ImageIcon,
+  Bot,
   X
 } from "lucide-react";
 
@@ -44,7 +45,7 @@ import {
 
 interface Profile {
   id: string;
-  type: "deepseek" | "gemini";
+  type: "deepseek" | "gemini" | "metaai";
   name: string;
   token?: string | null;
   cookie?: string | null;
@@ -85,6 +86,7 @@ interface HealthInfo {
   status: string;
   deepseek_active_profiles: number;
   gemini_active_profiles: number;
+  metaai_active_profiles: number;
 }
 
 
@@ -97,7 +99,7 @@ export function App() {
 
   // New Profile Form State
   const [showAddProfileModal, setShowAddProfileModal] = useState(false);
-  const [newProfileType, setNewProfileType] = useState<"deepseek" | "gemini">("deepseek");
+  const [newProfileType, setNewProfileType] = useState<"deepseek" | "gemini" | "metaai">("deepseek");
   const [newProfileName, setNewProfileName] = useState("");
   const [newProfileCredential, setNewProfileCredential] = useState("");
   const [newProfileIsActive, setNewProfileIsActive] = useState(true);
@@ -325,7 +327,7 @@ export function App() {
     setTestModalLoading(true);
     setCopiedResponse(false);
     const startT = Date.now();
-    const defaultModel = profile.type === "deepseek" ? "deepseek-chat" : "gemini-3-flash";
+    const defaultModel = profile.type === "deepseek" ? "deepseek-chat" : profile.type === "metaai" ? "meta-ai" : "gemini-3-flash";
     const selectedModel = customModel || testModel || defaultModel;
     const promptText = customMessage || "Hello! Reply with 'OK' if you can read this.";
     const activeImages = customImages !== undefined ? customImages : testImages;
@@ -417,7 +419,7 @@ export function App() {
 
   const openTestModal = (profile: Profile) => {
     setTestModalProfile(profile);
-    const initialModel = profile.type === "deepseek" ? "deepseek-chat" : "gemini-3-flash";
+    const initialModel = profile.type === "deepseek" ? "deepseek-chat" : profile.type === "metaai" ? "meta-ai" : "gemini-3-flash";
     setTestModel(initialModel);
     setShowRawJson(false);
     setCopiedResponse(false);
@@ -552,6 +554,20 @@ export function App() {
             <CardContent>
               <p className="text-2xl font-bold text-foreground">
                 {health?.gemini_active_profiles ?? 0}
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardDescription className="uppercase tracking-wider">Meta AI Active Profiles</CardDescription>
+              <div className="p-2 bg-muted rounded-xl border border-border">
+                <Bot className="w-5 h-5 text-foreground" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl font-bold text-foreground">
+                {health?.metaai_active_profiles ?? 0}
               </p>
             </CardContent>
           </Card>
@@ -898,6 +914,7 @@ export function App() {
                   >
                     <option value="deepseek">DeepSeek</option>
                     <option value="gemini">Gemini</option>
+                    <option value="metaai">Meta AI</option>
                   </select>
                 </div>
 
@@ -914,18 +931,18 @@ export function App() {
 
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                    {newProfileType === "deepseek" ? "DeepSeek Auth Token (Bearer token)" : "Gemini Cookie Header String"}
+                    {newProfileType === "deepseek" ? "DeepSeek Auth Token (Bearer token)" : newProfileType === "metaai" ? "Meta AI Cookie Header String" : "Gemini Cookie Header String"}
                   </label>
                   <Textarea
                     rows={4}
-                    placeholder={newProfileType === "deepseek" ? "Bearer M3KFWf..." : "SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=..."}
+                    placeholder={newProfileType === "deepseek" ? "Bearer M3KFWf..." : newProfileType === "metaai" ? "datr=...; ecto_1_sess=..." : "SAPISID=...; __Secure-1PSID=...; __Secure-1PSIDTS=..."}
                     value={newProfileCredential}
                     onChange={(e) => setNewProfileCredential(e.target.value)}
                     className="max-h-48 min-h-[110px] overflow-y-auto font-mono text-xs break-all resize-y"
                     required
                   />
                   <p className="text-[11px] text-muted-foreground mt-1">
-                    {newProfileType === "gemini" ? "Tip: Paste the full cookie header containing __Secure-1PSID and __Secure-1PSIDTS." : "Tip: Paste your DeepSeek auth token."}
+                    {newProfileType === "metaai" ? "Tip: Paste cookie containing datr and ecto_1_sess." : newProfileType === "gemini" ? "Tip: Paste the full cookie header containing __Secure-1PSID and __Secure-1PSIDTS." : "Tip: Paste your DeepSeek auth token."}
                   </p>
                 </div>
 
@@ -1080,7 +1097,7 @@ export function App() {
                     {testModalProfile.type}
                   </Badge>
                   <span className="text-xs font-mono text-muted-foreground">ID: {testModalProfile.id}</span>
-                  <span className="text-xs text-muted-foreground">• Model: <code className="text-foreground">{testModel || (testModalProfile.type === "deepseek" ? "deepseek-chat" : "gemini-3-flash")}</code></span>
+                  <span className="text-xs text-muted-foreground">• Model: <code className="text-foreground">{testModel || (testModalProfile.type === "deepseek" ? "deepseek-chat" : testModalProfile.type === "metaai" ? "meta-ai" : "gemini-3-flash")}</code></span>
                 </CardDescription>
               </div>
             </CardHeader>
@@ -1100,6 +1117,12 @@ export function App() {
                         <option value="deepseek-chat">deepseek-chat (Default)</option>
                         <option value="deepseek-v3">deepseek-v3</option>
                         <option value="deepseek-r1">deepseek-r1</option>
+                      </>
+                    ) : testModalProfile.type === "metaai" ? (
+                      <>
+                        <option value="meta-ai">meta-ai (Default)</option>
+                        <option value="llama-3.3-70b">llama-3.3-70b</option>
+                        <option value="meta-imagine">meta-imagine</option>
                       </>
                     ) : (
                       <>
@@ -1208,7 +1231,7 @@ export function App() {
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-1.5">
                           <Badge variant="outline" className="text-[10px] text-primary border-primary/30 py-0">
-                            {testModalProfile.type === "deepseek" ? "DeepSeek Vision" : "Gemini Vision"} ({testImages.length} {testImages.length > 1 ? "images" : "image"})
+                            {testModalProfile.type === "deepseek" ? "DeepSeek Vision" : testModalProfile.type === "metaai" ? "Meta AI Vision" : "Gemini Vision"} ({testImages.length} {testImages.length > 1 ? "images" : "image"})
                           </Badge>
                           <span className="text-[11px] text-muted-foreground">Attached in OpenAI Vision format</span>
                         </div>

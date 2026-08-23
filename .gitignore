@@ -16,4 +16,10 @@ log_files
 
 temp/
 .DS_Store
+cookie.txt
+cookies.txt
+*.cookie
+lightpanda
+lightpanda*
+bin/
 # Vendor git repos (standalone, not submodules)

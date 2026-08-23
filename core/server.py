@@ -13,6 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from core.routers.deepseek import router as deepseek_router
 from core.routers.gemini import router as gemini_router
+from core.routers.metaai import router as metaai_router
 from core.routers.gemini.pool import gemini_pool
 from core.routers.keys import router as keys_router
 from core.routers.profiles import router as profiles_router
@@ -98,6 +99,7 @@ app.add_middleware(
 
 app.include_router(deepseek_router, prefix="/v1/deepseek")
 app.include_router(gemini_router, prefix="/v1/gemini")
+app.include_router(metaai_router, prefix="/v1/metaai")
 app.include_router(keys_router, prefix="/v1/keys")
 app.include_router(profiles_router, prefix="/v1/profiles")
 
@@ -106,10 +108,12 @@ app.include_router(profiles_router, prefix="/v1/profiles")
 async def health():
     ds_active = len(load_balancer.get_active_profiles("deepseek"))
     gem_active = len(load_balancer.get_active_profiles("gemini"))
+    meta_active = len(load_balancer.get_active_profiles("metaai"))
     return {
         "status": "ok",
         "deepseek_active_profiles": ds_active,
         "gemini_active_profiles": gem_active,
+        "metaai_active_profiles": meta_active,
     }
 
 

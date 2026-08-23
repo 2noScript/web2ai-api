@@ -14,26 +14,26 @@ router = APIRouter(tags=["Profiles"])
 
 
 class ProfileCreateRequest(BaseModel):
-    type: Literal["deepseek", "gemini"] = Field(..., description="Type of profile: 'deepseek' or 'gemini'")
+    type: Literal["deepseek", "gemini", "metaai"] = Field(..., description="Type of profile: 'deepseek', 'gemini', or 'metaai'")
     name: str = Field(..., description="Friendly name for the profile")
     token: str | None = Field(default=None, description="Auth token (required for 'deepseek')")
-    cookie: str | None = Field(default=None, description="Cookie string (required for 'gemini')")
+    cookie: str | None = Field(default=None, description="Cookie string (required for 'gemini' and 'metaai')")
     is_active: bool = Field(default=True, description="Whether the profile is active")
 
 
 class ProfileUpdateRequest(BaseModel):
     name: str | None = Field(default=None, description="Updated friendly name")
     token: str | None = Field(default=None, description="Updated token (for deepseek)")
-    cookie: str | None = Field(default=None, description="Updated cookie (for gemini)")
+    cookie: str | None = Field(default=None, description="Updated cookie (for gemini/metaai)")
     is_active: bool | None = Field(default=None, description="Updated active status")
 
 
 class ProfileResponse(BaseModel):
     id: str = Field(..., description="Unique profile ID")
-    type: str = Field(..., description="Profile type ('deepseek' or 'gemini')")
+    type: str = Field(..., description="Profile type ('deepseek', 'gemini', or 'metaai')")
     name: str = Field(..., description="Friendly profile name")
     token: str | None = Field(default=None, description="Auth token if deepseek profile")
-    cookie: str | None = Field(default=None, description="Cookie string if gemini profile")
+    cookie: str | None = Field(default=None, description="Cookie string if gemini/metaai profile")
     is_active: bool = Field(..., description="Active status")
     total_requests: int = Field(default=0, description="Total requests processed by profile")
     request_counts: dict[str, dict[str, int]] = Field(
@@ -60,10 +60,10 @@ async def create_new_profile(body: ProfileCreateRequest):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Field 'token' is required for DeepSeek profile."
         )
-    if body.type == "gemini" and not body.cookie:
+    if body.type in ("gemini", "metaai") and not body.cookie:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Field 'cookie' is required for Gemini profile."
+            detail=f"Field 'cookie' is required for {body.type.capitalize()} profile."
         )
 
     try:
@@ -84,7 +84,7 @@ async def create_new_profile(body: ProfileCreateRequest):
 
 
 @router.get("", response_model=ProfileListResponse, summary="List all profiles")
-async def get_profiles(type: Literal["deepseek", "gemini"] | None = Query(None, description="Filter profiles by type")):
+async def get_profiles(type: Literal["deepseek", "gemini", "metaai"] | None = Query(None, description="Filter profiles by type")):
     try:
         profiles = await asyncio.to_thread(list_profiles, profile_type=type)
         return ProfileListResponse(profiles=profiles)

@@ -54,7 +54,7 @@ def create_profile(
             "type": profile_type,
             "name": name or f"{profile_type.capitalize()} Profile",
             "token": token if profile_type == "deepseek" else None,
-            "cookie": cookie if profile_type == "gemini" else None,
+            "cookie": cookie if profile_type in ("gemini", "metaai") else None,
             "is_active": is_active,
             "total_requests": 0,
             "request_counts": {},
@@ -130,7 +130,7 @@ def update_profile(
         new_cookie = profile["cookie"]
         if ptype == "deepseek" and token is not None:
             new_token = token
-        elif ptype == "gemini" and cookie is not None:
+        elif ptype in ("gemini", "metaai") and cookie is not None:
             new_cookie = cookie
 
         now = time.strftime('%Y-%m-%dT%H:%M:%S')
