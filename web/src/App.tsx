@@ -362,7 +362,8 @@ export function App() {
 
       if (res.ok) {
         const data = await res.json();
-        const replyText = data.choices?.[0]?.message?.content || "OK (No content returned)";
+        const msgObj = data.choices?.[0]?.message;
+        const replyText = msgObj?.content || msgObj?.reasoning_content || "OK (No content returned)";
         const successResult: TestResult = {
           status: "ok",
           profile_id: profile.id,

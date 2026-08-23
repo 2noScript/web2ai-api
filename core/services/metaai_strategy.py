@@ -59,13 +59,15 @@ class MetaAIStrategy(BaseProviderStrategy):
 
         loop = asyncio.get_running_loop()
 
-        def do_prompt() -> dict:
-            return ai.prompt(
+        def do_prompt() -> dict[str, Any]:
+            res = ai.prompt(
                 message=prompt,
                 conversation_id=conv_id,
+                stream=False,
                 images=files,
                 timeout=60,
             )
+            return res if isinstance(res, dict) else {}
 
         result = await loop.run_in_executor(executor, do_prompt)
 
@@ -79,12 +81,16 @@ class MetaAIStrategy(BaseProviderStrategy):
             session_kwargs["_chat_instance"] = {"conversation_id": new_conv_id}
 
         msg = result.get("message", "")
+        thought = result.get("raw", {}).get("thought", "")
+        if not msg and thought:
+            msg = thought
+            thought = ""
+
         image_urls = result.get("image_urls", [])
         if image_urls:
             msg_urls = "\n".join([f"![Generated Image]({u})" for u in image_urls])
             msg = f"{msg}\n\n{msg_urls}".strip()
 
-        thought = result.get("raw", {}).get("thought", "")
         return msg, thought
 
     async def execute_stream(
