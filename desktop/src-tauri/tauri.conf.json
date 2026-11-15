@@ -45,6 +45,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -52,5 +53,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFBNzA1MzgwMDA0MUJGMkUKUldRdXYwRUFnRk53cWpUU1RuUjFnOElveW1SS1NrRjlGcEdXUnZUQ3dib3hiU2ROSE0wc0hQMFkK",
+      "endpoints": [
+        "https://github.com/2noScript/web2ai-api/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

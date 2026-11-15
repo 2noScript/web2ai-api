@@ -1,0 +1,28 @@
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import "./globals.css";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+});
+
+export const metadata: Metadata = {
+  title: "Web2AI API — OpenAI-Compatible Local AI Gateway & Desktop Pet",
+  description:
+    "Open-source Rust + Tauri v2 desktop gateway turning DeepSeek into an OpenAI-compatible local API with multi-profile load balancing, SQLite persistence, and an interactive floating Desktop Pet.",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en" className={inter.variable}>
+      <body className="min-h-screen bg-background text-foreground antialiased">
+        {children}
+      </body>
+    </html>
+  );
+}

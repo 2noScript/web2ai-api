@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import {
   Activity,
   Check,
@@ -108,6 +110,28 @@ export default function App() {
   // Pet Store state
   const [selectedPetId, setSelectedPetId] = useState<PetId>(() => getSavedPetId());
   const [previewPetStatus, setPreviewPetStatus] = useState<PetStatus>("idle");
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  const handleCheckUpdate = async () => {
+    setCheckingUpdate(true);
+    setUpdateStatus("Checking...");
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateStatus(`Downloading v${update.version}...`);
+        await update.downloadAndInstall();
+        setUpdateStatus(`Restarting to v${update.version}...`);
+        await relaunch();
+      } else {
+        setUpdateStatus("Up to date");
+      }
+    } catch {
+      setUpdateStatus("No release feed yet");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 
   useEffect(() => {
     fetch(apiUrl("/v1/pet/state"))
@@ -611,6 +635,20 @@ export default function App() {
                   {health?.metaai_active_profiles ?? 0}
                 </span>
               </div>
+            </div>
+            <div className="mt-2.5 border-t border-border/60 pt-2">
+              <button
+                type="button"
+                disabled={checkingUpdate}
+                onClick={() => void handleCheckUpdate()}
+                className="flex w-full items-center justify-between text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+              >
+                <span className="flex items-center gap-1.5">
+                  <RefreshCw className={`h-3 w-3 ${checkingUpdate ? "animate-spin" : ""}`} />
+                  {updateStatus ?? "Check for Updates"}
+                </span>
+                <span className="font-mono text-[10px]">v0.1.0</span>
+              </button>
             </div>
           </div>
         </aside>

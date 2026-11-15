@@ -269,6 +269,8 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(provider_registry.clone())
         .setup(move |app| {
             let db_path = resolve_db_path(app);
