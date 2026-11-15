@@ -272,11 +272,11 @@ export default function App() {
     setTestResult(null);
     const start = performance.now();
     try {
-      const res = await fetch(apiUrl(`/v1/${testingProfile.type}/chat/completions`), {
+      const res = await fetch(apiUrl("/v1/chat/completions"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: testModel,
+          model: `${testingProfile.type}:${testModel}`,
           messages: [{ role: "user", content: testPrompt }],
           stream: false,
         }),
@@ -349,11 +349,11 @@ export default function App() {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (pgSessionId.trim()) headers["X-Session-Id"] = pgSessionId.trim();
 
-      const res = await fetch(apiUrl(`/v1/${pgProvider}/chat/completions`), {
+      const res = await fetch(apiUrl("/v1/chat/completions"), {
         method: "POST",
         headers,
         body: JSON.stringify({
-          model: pgModel,
+          model: `${pgProvider}:${pgModel}`,
           messages: [{ role: "user", content: pgPrompt }],
           stream: pgStream,
         }),
@@ -963,7 +963,7 @@ export default function App() {
               <div>
                 <CardTitle className="text-sm">Test: {testingProfile.name}</CardTitle>
                 <CardDescription className="text-xs">
-                  {PROVIDER_LABELS[testingProfile.type]} &middot; /v1/{testingProfile.type}/chat/completions
+                  {PROVIDER_LABELS[testingProfile.type]} &middot; {testingProfile.type}:{testModel}
                 </CardDescription>
               </div>
               <Button variant="ghost" size="icon-xs" onClick={() => setTestingProfile(null)}>

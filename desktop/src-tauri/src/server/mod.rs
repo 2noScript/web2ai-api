@@ -45,15 +45,11 @@ pub fn build_router(state: AppState) -> Router {
                 .put(update_profile_handler)
                 .delete(delete_profile_handler),
         )
-        .route("/v1/keys", get(list_keys_handler).post(create_key_ui_handler))
-        .route("/v1/keys/generate", post(generate_key_handler))
+        .route("/v1/keys", get(list_keys_handler).post(create_key_handler))
         .route("/v1/keys/revoke", post(revoke_key_handler))
         .route("/v1/keys/{key}", delete(delete_key_handler))
-        .route("/v1/{provider}/models", get(list_models_handler))
-        .route(
-            "/v1/{provider}/chat/completions",
-            post(chat_completions_handler),
-        )
+        .route("/v1/models", get(list_all_models_handler))
+        .route("/v1/chat/completions", post(unified_chat_completions_handler))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -80,16 +76,16 @@ async fn docs_handler() -> Html<&'static str> {
     Html(
         r#"<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Unofficial API Gateway (Rust)</title></head>
+<head><meta charset="utf-8"><title>Web2AI API</title></head>
 <body style="font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px;">
-  <h1>Unofficial API Gateway (Rust Native Server)</h1>
-  <p>Running on <code>http://127.0.0.1:8088</code></p>
+  <h1>Web2AI API Gateway</h1>
+  <p>OpenAI-compatible base URL: <code>http://127.0.0.1:8088/v1</code></p>
   <ul>
     <li><code>GET /health</code></li>
+    <li><code>GET /v1/models</code> (returns <code>provider:model</code> IDs)</li>
+    <li><code>POST /v1/chat/completions</code> (<code>model: "deepseek:deepseek-chat"</code>, <code>"gemini:gemini-3-flash"</code>, <code>"metaai:..."</code>)</li>
     <li><code>GET / POST /v1/profiles</code> &middot; <code>PUT / DELETE /v1/profiles/{id}</code></li>
-    <li><code>GET /v1/keys</code> &middot; <code>POST /v1/keys/generate</code> &middot; <code>POST /v1/keys/revoke</code></li>
-    <li><code>GET /v1/{provider}/models</code> (<code>deepseek</code>, <code>gemini</code>, <code>metaai</code>)</li>
-    <li><code>POST /v1/{provider}/chat/completions</code> (JSON &amp; SSE streaming)</li>
+    <li><code>GET / POST /v1/keys</code> &middot; <code>POST /v1/keys/revoke</code> &middot; <code>DELETE /v1/keys/{key}</code></li>
   </ul>
 </body>
 </html>"#,
@@ -264,26 +260,12 @@ async fn list_keys_handler(State(state): State<AppState>) -> Response {
     }
 }
 
-async fn create_key_ui_handler(
+async fn create_key_handler(
     State(state): State<AppState>,
     Json(body): Json<KeyCreateBody>,
 ) -> Response {
     match state.db.create_api_key(&body.name) {
-        Ok(k) => Json(k).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "detail": e.to_string() })),
-        )
-            .into_response(),
-    }
-}
-
-async fn generate_key_handler(
-    State(state): State<AppState>,
-    Json(body): Json<KeyCreateBody>,
-) -> Response {
-    match state.db.create_api_key(&body.name) {
-        Ok(k) => Json(json!({ "api_key": k.key, "name": k.name })).into_response(),
+        Ok(k) => (StatusCode::CREATED, Json(k)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "detail": e.to_string() })),
@@ -325,18 +307,8 @@ async fn delete_key_handler(
     }
 }
 
-async fn list_models_handler(
-    State(state): State<AppState>,
-    Path(provider): Path<String>,
-) -> Response {
-    if state.registry.get(&provider).is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": { "message": format!("Unknown provider '{provider}'") } })),
-        )
-            .into_response();
-    }
-    Json(state.registry.list_models(Some(&provider))).into_response()
+async fn list_all_models_handler(State(state): State<AppState>) -> Response {
+    Json(state.registry.list_unified_models()).into_response()
 }
 
 fn is_auth_disabled() -> bool {
@@ -376,11 +348,36 @@ fn extract_api_key(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-async fn chat_completions_handler(
+async fn unified_chat_completions_handler(
     State(state): State<AppState>,
-    Path(provider): Path<String>,
     headers: HeaderMap,
-    Json(request): Json<ChatCompletionRequest>,
+    Json(mut request): Json<ChatCompletionRequest>,
+) -> Response {
+    let (provider, resolved_model) = match state.registry.resolve_model(&request.model) {
+        Ok(pair) => pair,
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "message": message,
+                        "type": "invalid_request_error",
+                        "code": "invalid_model"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+    request.model = resolved_model;
+    run_chat_completions(state, provider, headers, request).await
+}
+
+async fn run_chat_completions(
+    state: AppState,
+    provider: String,
+    headers: HeaderMap,
+    request: ChatCompletionRequest,
 ) -> Response {
     let disable_auth = is_auth_disabled();
     let api_key = extract_api_key(&headers);
@@ -527,16 +524,38 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let res_models = app
+        let res_unified_models = app
+            .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/v1/deepseek/models")
+                    .uri("/v1/models")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(res_models.status(), StatusCode::OK);
+        assert_eq!(res_unified_models.status(), StatusCode::OK);
+        let models_bytes = axum::body::to_bytes(res_unified_models.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let models_text = String::from_utf8_lossy(&models_bytes);
+        assert!(models_text.contains("deepseek:deepseek-chat"));
+        assert!(models_text.contains("gemini:gemini-3-flash"));
+
+        let res_bad_model = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"unknown-model","messages":[{"role":"user","content":"hi"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res_bad_model.status(), StatusCode::BAD_REQUEST);
 
         let _ = std::fs::remove_file(tmp);
     }
@@ -576,7 +595,7 @@ mod tests {
 
         // 2. Non-streaming DeepSeek chat completion
         let req_body = serde_json::json!({
-            "model": "deepseek-chat",
+            "model": "deepseek:deepseek-chat",
             "messages": [{"role": "user", "content": "Reply with exactly: RUST_OK"}],
             "stream": false
         });
@@ -585,7 +604,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/deepseek/chat/completions")
+                    .uri("/v1/chat/completions")
                     .header("content-type", "application/json")
                     .body(Body::from(req_body.to_string()))
                     .unwrap(),
@@ -608,7 +627,7 @@ mod tests {
 
         // 3. Streaming DeepSeek chat completion reusing X-Session-Id
         let stream_body = serde_json::json!({
-            "model": "deepseek-chat",
+            "model": "deepseek:deepseek-chat",
             "messages": [{"role": "user", "content": "Say hello in 3 words."}],
             "stream": true
         });
@@ -616,7 +635,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/deepseek/chat/completions")
+                    .uri("/v1/chat/completions")
                     .header("content-type", "application/json")
                     .header("x-session-id", &session_id)
                     .body(Body::from(stream_body.to_string()))

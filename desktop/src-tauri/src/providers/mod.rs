@@ -108,4 +108,57 @@ impl ProviderRegistry {
         };
         ModelList::new(data)
     }
+
+    /// Lists all registered providers' models in deterministic `provider:model` format.
+    pub fn list_unified_models(&self) -> ModelList {
+        let mut entries: Vec<_> = self.providers.iter().collect();
+        entries.sort_by_key(|(id, _)| *id);
+
+        let mut data = Vec::new();
+        for (provider_id, provider) in entries {
+            for mut m in provider.models() {
+                m.id = format!("{provider_id}:{}", m.id);
+                m.owned_by = (*provider_id).to_string();
+                data.push(m);
+            }
+        }
+        ModelList::new(data)
+    }
+
+    /// Resolves a model string (`provider:model` or an exact registered model ID) to `(provider_id, model_id)`.
+    pub fn resolve_model(&self, raw_model: &str) -> Result<(String, String), String> {
+        let trimmed = raw_model.trim();
+        if let Some((raw_provider, raw_model_id)) = trimmed.split_once(':') {
+            let provider = raw_provider.trim().to_lowercase();
+            let model = raw_model_id.trim().to_string();
+            if provider.is_empty() || model.is_empty() {
+                return Err(
+                    "Invalid model format. Expected 'provider:model' (e.g. 'deepseek:deepseek-chat')."
+                        .to_string(),
+                );
+            }
+            if !self.providers.contains_key(provider.as_str()) {
+                let mut supported: Vec<_> = self.providers.keys().copied().collect();
+                supported.sort_unstable();
+                return Err(format!(
+                    "Unknown provider '{provider}'. Supported providers: {}.",
+                    supported.join(", ")
+                ));
+            }
+            return Ok((provider, model));
+        }
+
+        let mut entries: Vec<_> = self.providers.iter().collect();
+        entries.sort_by_key(|(id, _)| *id);
+        for (provider_id, provider) in entries {
+            if provider.models().iter().any(|m| m.id == trimmed) {
+                return Ok(((*provider_id).to_string(), trimmed.to_string()));
+            }
+        }
+
+        Err(
+            "Model must use 'provider:model' format (e.g. 'deepseek:deepseek-chat', 'gemini:gemini-3-flash')."
+                .to_string(),
+        )
+    }
 }
