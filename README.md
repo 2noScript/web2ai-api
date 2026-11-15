@@ -1,214 +1,141 @@
-# Unofficial API Gateway
+# Web2AI API
 
-> **⚠️ Unofficial & Experimental**
+> **Unofficial & Experimental**
 >
-> This project uses **undocumented, unofficial APIs** from DeepSeek and Google (Gemini). These are **not officially supported** by any provider.
->
-> - APIs can break or change without notice
-> - Rate limits and throttling apply
-> - Credentials (tokens/cookies) expire and must be refreshed
-> - **Not affiliated** with DeepSeek or Google
-> - For **prototypes, research, and personal projects** only
+> This project interfaces with **undocumented web APIs** from DeepSeek, Google Gemini, and Meta AI. It is not affiliated with or endorsed by any provider. Credentials (tokens/cookies) may expire, and rate limits or upstream changes can occur without notice. Intended for personal use, research, and local prototyping.
 
-OpenAI-compatible REST API & **Desktop App** for **DeepSeek**, **Gemini**, and **MetaAI** with multi-profile dynamic load balancing and management dashboard.
+**Web2AI API** is a **Rust + Tauri v2** desktop application and embedded **OpenAI-compatible local gateway** (`http://127.0.0.1:8088`) supporting **DeepSeek**, **Gemini**, and **Meta AI**, with multi-profile Round-Robin load balancing, sticky session continuity, SSE streaming, and Vision support.
 
-> 🖥️ [Desktop App Guide](desktop/README.md) — Tauri v2 desktop app setup, tray integration, and Rust migration status
->
-> 📖 [Architecture Overview](docs/ARCHITECTURE.md) — project structure, lifecycle, desktop architecture, streaming, auth
->
-> 🔄 [Provider Conversion Details](docs/CONVERSION.md) — OpenAI field mapping per provider
->
-> 🔑 [Authentication & Session Management](docs/auth.md) — API key management, Swagger UI setup, conversation context isolation
+---
+
+## Features
+
+- **Native Desktop App (Tauri v2 + React)**: Manage provider profiles, generate API keys, monitor gateway health, and test completions in the built-in Playground.
+- **Embedded Rust Gateway (Axum)**: Runs on `http://127.0.0.1:8088` automatically with the desktop app (or standalone via `bun run server`).
+- **OpenAI-Compatible Endpoints**: Drop-in `/v1/{provider}/models` and `/v1/{provider}/chat/completions` (`deepseek`, `gemini`, `metaai`) with SSE streaming and `image_url` Vision input.
+- **Multi-Profile Load Balancing & Sticky Sessions**: Round-Robin across active profiles with automatic failover, plus `X-Session-Id` affinity to preserve multi-turn conversation context.
+- **Local SQLite Persistence**: Stores profiles and API keys securely in your OS application data directory.
+
+---
 
 ## Quick Start
 
-### Option A: Desktop App (Tauri v2)
+### Prerequisites
+
+- [Bun](https://bun.sh/) (or Node.js)
+- [Rust](https://www.rust-lang.org/tools/install) toolchain
+
+### Install & Run
 
 ```bash
-cd desktop
-bun install
-bun run desktop:dev
+# Install frontend dependencies (first time)
+cd desktop && bun install && cd ..
+
+# Run the desktop app + embedded Rust gateway (Vite dev server on :5288)
+bun run dev
 ```
 
-The desktop app automatically starts and manages the local backend on `http://127.0.0.1:8088` and provides a native window + system tray menu. See [`desktop/README.md`](desktop/README.md) for prerequisites and production build instructions.
+### Root Scripts
 
-### Option B: Server / Docker
+| Command | Description |
+|---|---|
+| `bun run dev` | Launch the Tauri desktop app in development mode |
+| `bun run build` | Build production desktop bundle |
+| `bun run server` | Run standalone Rust HTTP gateway (`gateway_server`) without UI |
+| `bun run typecheck` | Run TypeScript typecheck (`tsc --noEmit`) |
+| `bun run lint` | Run frontend linter |
+| `bun run test` | Run Rust unit tests (`cargo test`) |
 
-#### 1. Configure Environment
-```bash
-cp .env.example .env
-```
+---
 
-#### 2. Run Application
+## Data Storage & Configuration
 
-**Via Docker (Recommended)**:
-```bash
-docker compose up -d
-```
+### Database Location
 
-**Via Local Script**:
-```bash
-./run.sh
-```
+By default, SQLite persistence (`web2ai.db`) is stored in your OS application data directory:
 
-#### 3. Access Services
-- **Web UI Dashboard**: http://localhost:8088/ui
-- **API Swagger Documentation**: http://localhost:8088/docs
+- **macOS**: `~/Library/Application Support/com.web2ai.desktop/web2ai.db`
+- **Linux**: `${XDG_DATA_HOME:-~/.local/share}/com.web2ai.desktop/web2ai.db`
+- **Windows**: `%APPDATA%\com.web2ai.desktop\web2ai.db`
 
-| Provider | GitHub Repository | Credentials Guide | Specific Endpoints |
-|---|---|---|---|
-| DeepSeek | [2noScript/deepseek-api](https://github.com/2noScript/deepseek-api) | [`docs/deepseek.md`](docs/deepseek.md) | [reasoning_content](docs/deepseek.md#response--additional-fields) |
-| Gemini | [2noScript/Gemini-API](https://github.com/2noScript/Gemini-API) | [`docs/gemini.md`](docs/gemini.md) | [Chats, Gems, Deep Research](docs/gemini.md#provider-specific-endpoints) |
+### Environment Variables
 
-## Profiles & Load Balancing
-
-Credentials are stored and managed via **Profiles** in SQLite (`data/unofficial_api.db`) and can be managed dynamically via the **Desktop App**, Web Dashboard, or REST API.
-
-- **Multi-Profile Load Balancing**: Chat completion requests automatically load-balance across active profiles (`is_active: true`) using a Round-Robin algorithm.
-- **Session-Profile Sticky Affinity**: When passing `X-Session-Id`, the conversation binds to a specific profile to ensure multi-turn context continuity. If the profile becomes inactive, auto-failover seamlessly routes to another active profile.
-
-### Profiles API (`/v1/profiles`)
-
-| Endpoint | Method | Description |
+| Variable | Default | Description |
 |---|---|---|
-| `POST /v1/profiles` | POST | Create a new profile (`deepseek` requires `token`, `gemini` requires `cookie`) |
-| `GET /v1/profiles` | GET | List all profiles (optional query parameter `?type=deepseek` or `?type=gemini`) |
-| `GET /v1/profiles/{id}` | GET | Get profile details by ID |
-| `PUT /v1/profiles/{id}` | PUT | Update profile name, credentials, or `is_active` status |
-| `DELETE /v1/profiles/{id}` | DELETE | Delete a profile by ID |
+| `WEB2AI_DATA_DIR` | OS app data dir | Custom directory for `web2ai.db` (falls back to `UNOFFICIAL_API_DATA_DIR` if set) |
+| `DISABLE_AUTH` | `true` in debug | Disable Bearer API key validation (`true` / `false`) |
+| `API_KEY_SECRET` | — | HMAC secret used for API key signing |
+| `SESSION_TTL_DAYS` | `7` | Session lifetime in days after last use (`0` = never expire) |
+| `SESSION_MAX_SESSIONS` | `5000` | Maximum sessions kept in memory |
 
-## Configuration
+---
 
-| Env var | Required | Description |
+## API Reference
+
+Base URL: `http://127.0.0.1:8088`
+
+### System
+
+| Method | Endpoint | Description |
 |---|---|---|
-| `UNOFFICIAL_API_DATA_DIR` | ❌ | Directory for `unofficial_api.db` (SQLite) & legacy JSON files. Default: `data` |
-| `DISABLE_AUTH` | ❌ | Disable API key authentication in development mode (`true`/`false`). Default: `true` |
-| `SESSION_TTL_DAYS` | ❌ | Session lifetime in days after last use. `0` = never expire. Default: `7` |
-| `SESSION_MAX_SESSIONS` | ❌ | Max sessions kept in memory. Default: `5000` |
-| `API_KEY_SECRET` | ❌ | HMAC secret for API key signing. Change in production. |
+| `GET` | `/health` | Gateway status and active profile counts per provider |
+| `GET` | `/docs` (or `/`) | Interactive API documentation |
 
-## Common (OpenAI-compatible) Endpoints
+### OpenAI-Compatible Chat & Models
 
-These share the same format across all providers.
+Replace `{provider}` with `deepseek`, `gemini`, or `metaai`:
 
-| Endpoint | Method | DeepSeek | Gemini |
-|---|---|---|---|
-| `GET /v1/{provider}/models` | GET | ✅ | ✅ |
-| `POST /v1/{provider}/chat/completions` | POST | ✅ | ✅ |
-
-### Request body
-
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `model` | string | ✅ | — | Model ID (e.g. `deepseek-chat`, `deepseek-reasoner`, `gemini-3-flash`, `gemini-3-pro`) |
-| `messages` | array | ✅ | — | `[{"role": "user", "content": "..."}]` |
-| `stream` | bool | ❌ | `false` | Enable SSE streaming |
-
-### Response
-
-```json
-{
-  "id": "chatcmpl-1719000000",
-  "object": "chat.completion",
-  "created": 1719000000,
-  "model": "deepseek-chat",
-  "choices": [
-    {
-      "index": 0,
-      "message": { "role": "assistant", "content": "..." },
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": { "prompt_tokens": 0, "completion_tokens": 42, "total_tokens": 42 }
-}
-```
-
-Streaming SSE format:
-```
-data: {"choices": [{"delta": {"content": "..."}}]}
-data: [DONE]
-```
-
-## System
-
-| Endpoint | Method | Description |
+| Method | Endpoint | Description |
 |---|---|---|
-| `GET /health` | GET | Provider connection status |
-| `GET /` | GET | Redirects to Web Dashboard or Swagger UI |
+| `GET` | `/v1/{provider}/models` | List available models for the provider |
+| `POST` | `/v1/{provider}/chat/completions` | Chat completion (`stream: true` for SSE, `image_url` for Vision) |
 
-## API Key Management
+### Profiles & API Keys
 
-| Endpoint | Method | Description |
+| Method | Endpoint | Description |
 |---|---|---|
-| `POST /v1/keys/generate` | POST | Generate a new API key |
-| `GET /v1/keys` | GET | List all API keys (masked) |
-| `POST /v1/keys/revoke` | POST | Deactivate an API key |
+| `GET` | `/v1/profiles` | List profiles (optional `?type=deepseek\|gemini\|metaai`) |
+| `POST` | `/v1/profiles` | Create profile (`token` for DeepSeek, `cookie` for Gemini/Meta AI) |
+| `GET` / `PUT` / `DELETE` | `/v1/profiles/{id}` | Read, update, or delete a profile |
+| `GET` / `POST` | `/v1/keys` | List or create API keys |
+| `POST` | `/v1/keys/generate` | Generate a new Bearer API key |
+| `POST` | `/v1/keys/revoke` | Revoke an API key |
+| `DELETE` | `/v1/keys/{key}` | Delete an API key |
 
-See [docs/auth.md](docs/auth.md) for full details.
+---
 
 ## Examples
 
+### Chat Completion
+
 ```bash
-# DeepSeek
-curl -s http://localhost:8088/v1/deepseek/chat/completions \
-  -H "Authorization: Bearer <key>" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "deepseek-chat", "messages": [{"role": "user", "content": "Hi"}]}'
-
-# Gemini
-curl -s http://localhost:8088/v1/gemini/chat/completions \
-  -H "Authorization: Bearer <key>" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gemini-3-flash", "messages": [{"role": "user", "content": "Hi"}]}'
-
-# Session persistence with Sticky Profile Affinity
-curl -s http://localhost:8088/v1/gemini/chat/completions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "X-Session-Id: my-chat-session-001" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gemini-3-flash", "messages": [{"role": "user", "content": "What did I just ask?"}]}'
-```
-
-## Multimodal Vision Support
-
-The gateway natively supports standard **OpenAI Vision format** (`image_url`) across providers (**DeepSeek** & **Gemini**).
-
-Images can be supplied as:
-- **Direct HTTP/HTTPS Image URLs**
-- **Base64 Data URIs** (`data:image/png;base64,...`, `data:image/jpeg;base64,...`, `data:image/webp;base64,...`)
-
-The backend automatically parses, uploads concurrently (solving PoW challenges for DeepSeek), and injects images into the chat completion pipeline seamlessly.
-
-### Vision Examples
-
-#### 1. Single Image Analysis (URL)
-```bash
-curl -s http://localhost:8088/v1/gemini/chat/completions \
+curl -s http://127.0.0.1:8088/v1/deepseek/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gemini-3-flash",
-    "messages": [
-      {
-        "role": "user",
-        "content": [
-          { "type": "text", "text": "What character is depicted in this image?" },
-          {
-            "type": "image_url",
-            "image_url": {
-              "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png"
-            }
-          }
-        ]
-      }
-    ],
+    "model": "deepseek-chat",
+    "messages": [{"role": "user", "content": "Hello!"}],
     "stream": false
   }'
 ```
 
-#### 2. Multiple Images Comparison (Base64 + URL)
+### Multi-Turn Session (`X-Session-Id`)
+
 ```bash
-curl -s http://localhost:8088/v1/[provider]/chat/completions \
+curl -s http://127.0.0.1:8088/v1/gemini/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "X-Session-Id: my-session-001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-3-flash",
+    "messages": [{"role": "user", "content": "Remember this code: 42"}]
+  }'
+```
+
+### Multimodal Vision (`image_url`)
+
+```bash
+curl -s http://127.0.0.1:8088/v1/gemini/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -217,19 +144,31 @@ curl -s http://localhost:8088/v1/[provider]/chat/completions \
       {
         "role": "user",
         "content": [
-          { "type": "text", "text": "Compare these two images and describe them:" },
+          { "type": "text", "text": "Describe this image." },
           {
             "type": "image_url",
             "image_url": { "url": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png" }
-          },
-          {
-            "type": "image_url",
-            "image_url": { "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" }
           }
         ]
       }
-    ],
-    "stream": false
+    ]
   }'
 ```
 
+---
+
+## Project Structure & Docs
+
+```text
+web2ai-api/
+├── package.json              # Root convenience scripts (dev, build, server, test)
+├── desktop/
+│   ├── src/                  # React + Tailwind + shadcn/ui frontend
+│   └── src-tauri/            # Rust + Tauri v2 + Axum gateway + Diesel SQLite
+└── docs/                     # Architecture, auth, and provider docs
+```
+
+- [Desktop App Guide](desktop/README.md)
+- [Architecture Overview](docs/ARCHITECTURE.md)
+- [Authentication & Session Management](docs/auth.md)
+- [Provider Conversion Details](docs/CONVERSION.md)
