@@ -1,25 +1,31 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
-.env
-data/
-tests/raw
-log_files
-
-
-temp/
+# OS & Editors
 .DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.sw?
+
+# Environment & Secrets
+.env
+.env.*
+*.cookie
 cookie.txt
 cookies.txt
-*.cookie
-lightpanda
-lightpanda*
-bin/
-# Vendor git repos (standalone, not submodules)
+
+# Database & Local Data
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Logs & Temp
+*.log
+/temp/
+
+# Dependencies & Build Artifacts
+node_modules/
+/build/
+/dist/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
