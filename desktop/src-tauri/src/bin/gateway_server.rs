@@ -52,6 +52,7 @@ async fn main() {
         registry: Arc::new(ProviderRegistry::with_defaults().expect("failed to init providers")),
         load_balancer: Arc::new(ProfileLoadBalancer::new()),
         session_manager: Arc::new(VirtualSessionManager::new()),
+        app_handle: None,
     };
 
     let addr: SocketAddr = "127.0.0.1:8088".parse().unwrap();

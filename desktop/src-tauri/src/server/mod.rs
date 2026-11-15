@@ -9,12 +9,13 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         Html, IntoResponse, Response,
     },
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
+use tauri::Emitter;
 use tokio::sync::watch;
 use tower_http::cors::CorsLayer;
 
@@ -31,6 +32,19 @@ pub struct AppState {
     pub registry: Arc<ProviderRegistry>,
     pub load_balancer: Arc<ProfileLoadBalancer>,
     pub session_manager: Arc<VirtualSessionManager>,
+    pub app_handle: Option<tauri::AppHandle>,
+}
+
+fn emit_pet_status(state: &AppState, status: &str, model: &str) {
+    if let Some(handle) = &state.app_handle {
+        let _ = handle.emit(
+            "pet:status",
+            json!({
+                "status": status,
+                "model": model,
+            }),
+        );
+    }
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -50,6 +64,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/keys/{key}", delete(delete_key_handler))
         .route("/v1/models", get(list_all_models_handler))
         .route("/v1/chat/completions", post(unified_chat_completions_handler))
+        .route("/v1/pet/state", get(get_pet_state_handler))
+        .route("/v1/pet/selected", put(set_pet_selected_handler))
+        .route("/v1/pet/sessions", post(create_pet_session_handler))
+        .route(
+            "/v1/pet/sessions/{session_id}",
+            put(select_pet_session_handler).delete(delete_pet_session_handler),
+        )
+        .route("/v1/pet/messages", post(append_pet_message_handler))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -429,6 +451,9 @@ async fn run_chat_completions(
         .flatten()
         .unwrap_or_default();
 
+    let model_label = format!("{provider}:{}", request.model);
+    emit_pet_status(&state, "thinking", &model_label);
+
     if request.stream {
         match execute_stream(
             state.db.clone(),
@@ -443,12 +468,17 @@ async fn run_chat_completions(
         .await
         {
             Ok(rx_stream) => {
-                let sse_stream = rx_stream.map(|raw_sse| {
+                let state_for_stream = state.clone();
+                let model_for_stream = model_label.clone();
+                let sse_stream = rx_stream.map(move |raw_sse| {
                     let payload = raw_sse
                         .strip_prefix("data: ")
                         .unwrap_or(&raw_sse)
                         .trim_end_matches("\n\n")
                         .to_string();
+                    if payload == "[DONE]" {
+                        emit_pet_status(&state_for_stream, "done", &model_for_stream);
+                    }
                     Ok::<Event, Infallible>(Event::default().data(payload))
                 });
                 let mut resp = Sse::new(sse_stream)
@@ -460,6 +490,7 @@ async fn run_chat_completions(
                 resp
             }
             Err(err) => {
+                emit_pet_status(&state, "error", &model_label);
                 let status = StatusCode::from_u16(err.status).unwrap_or(StatusCode::BAD_GATEWAY);
                 (status, Json(err.to_json())).into_response()
             }
@@ -476,6 +507,7 @@ async fn run_chat_completions(
         .await
         {
             Ok(completion) => {
+                emit_pet_status(&state, "done", &model_label);
                 let _ = state.db.save_session_data(
                     &session_id,
                     &session_data,
@@ -488,10 +520,129 @@ async fn run_chat_completions(
                 resp
             }
             Err(err) => {
+                emit_pet_status(&state, "error", &model_label);
                 let status = StatusCode::from_u16(err.status).unwrap_or(StatusCode::BAD_GATEWAY);
                 (status, Json(err.to_json())).into_response()
             }
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct SetPetSelectedRequest {
+    pet_id: String,
+}
+
+#[derive(Deserialize)]
+struct CreatePetSessionRequest {
+    session_id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    model: String,
+}
+
+#[derive(Deserialize)]
+struct AppendPetMessageRequest {
+    session_id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    model: String,
+    role: String,
+    content: String,
+}
+
+async fn get_pet_state_handler(State(state): State<AppState>) -> Response {
+    match state.db.get_pet_state() {
+        Ok(pet_state) => Json(pet_state).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "detail": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn set_pet_selected_handler(
+    State(state): State<AppState>,
+    Json(body): Json<SetPetSelectedRequest>,
+) -> Response {
+    match state.db.set_selected_pet(&body.pet_id) {
+        Ok(()) => Json(serde_json::json!({ "ok": true, "pet_id": body.pet_id })).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "detail": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn create_pet_session_handler(
+    State(state): State<AppState>,
+    Json(body): Json<CreatePetSessionRequest>,
+) -> Response {
+    match state
+        .db
+        .create_pet_session(&body.session_id, &body.title, &body.model)
+    {
+        Ok(session) => Json(session).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "detail": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn select_pet_session_handler(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Response {
+    match state.db.select_pet_session(&session_id) {
+        Ok(messages) => {
+            Json(serde_json::json!({ "session_id": session_id, "messages": messages }))
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "detail": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn delete_pet_session_handler(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Response {
+    match state.db.delete_pet_session(&session_id) {
+        Ok(deleted) => Json(serde_json::json!({ "deleted": deleted })).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "detail": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn append_pet_message_handler(
+    State(state): State<AppState>,
+    Json(body): Json<AppendPetMessageRequest>,
+) -> Response {
+    match state.db.append_pet_message(
+        &body.session_id,
+        &body.title,
+        &body.model,
+        &body.role,
+        &body.content,
+    ) {
+        Ok(msg) => Json(msg).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "detail": err.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -514,6 +665,7 @@ mod tests {
             registry: Arc::new(ProviderRegistry::with_defaults().unwrap()),
             load_balancer: Arc::new(ProfileLoadBalancer::new()),
             session_manager: Arc::new(VirtualSessionManager::new()),
+            app_handle: None,
         };
         let app = build_router(state);
 
@@ -578,6 +730,7 @@ mod tests {
             registry: Arc::new(ProviderRegistry::with_defaults().unwrap()),
             load_balancer: Arc::new(ProfileLoadBalancer::new()),
             session_manager: Arc::new(VirtualSessionManager::new()),
+            app_handle: None,
         };
         let app = build_router(state);
 

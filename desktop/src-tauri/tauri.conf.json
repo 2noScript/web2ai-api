@@ -25,6 +25,20 @@
         "minWidth": 960,
         "minHeight": 640,
         "resizable": true
+      },
+      {
+        "label": "pet",
+        "title": "Web2AI Pet",
+        "url": "index.html",
+        "width": 280,
+        "height": 220,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "resizable": false,
+        "visible": true
       }
     ]
   },

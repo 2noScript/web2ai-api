@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import {
   Activity,
   Check,
@@ -11,6 +13,7 @@ import {
   Plus,
   RefreshCw,
   Send,
+  Sparkles,
   Trash2,
   Users,
   X,
@@ -32,9 +35,17 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { apiUrl, openApiDocs } from "@/lib/api";
+import {
+  PET_CATALOG,
+  PET_STORAGE_KEY,
+  PetSprite,
+  getSavedPetId,
+  type PetId,
+  type PetStatus,
+} from "@/components/pet-sprite";
 
 type ProviderType = "deepseek" | "gemini" | "metaai";
-type NavTab = "profiles" | "keys" | "playground";
+type NavTab = "profiles" | "keys" | "playground" | "pets";
 
 interface HealthStatus {
   status: string;
@@ -93,6 +104,41 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>("profiles");
   const [providerFilter, setProviderFilter] = useState<"all" | ProviderType>("all");
   const [loading, setLoading] = useState(false);
+
+  // Pet Store state
+  const [selectedPetId, setSelectedPetId] = useState<PetId>(() => getSavedPetId());
+  const [previewPetStatus, setPreviewPetStatus] = useState<PetStatus>("idle");
+
+  useEffect(() => {
+    fetch(apiUrl("/v1/pet/state"))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.selected_pet_id) {
+          setSelectedPetId(data.selected_pet_id as PetId);
+          localStorage.setItem(PET_STORAGE_KEY, data.selected_pet_id);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleSelectPet = async (petId: PetId) => {
+    setSelectedPetId(petId);
+    localStorage.setItem(PET_STORAGE_KEY, petId);
+    try {
+      await fetch(apiUrl("/v1/pet/selected"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pet_id: petId }),
+      });
+    } catch {
+      // Ignore if backend unreachable
+    }
+    try {
+      await emit("pet:select", { petId });
+    } catch {
+      // Ignore outside Tauri
+    }
+  };
 
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -410,6 +456,14 @@ export default function App() {
       <Button
         variant="ghost"
         size="icon-xs"
+        onClick={() => void invoke("toggle_pet_window").catch(() => {})}
+        title="Show/Hide Floating Pet"
+      >
+        <Sparkles className="h-3.5 w-3.5 text-primary" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-xs"
         onClick={() => void refreshAll()}
         disabled={loading}
         title="Refresh"
@@ -497,6 +551,24 @@ export default function App() {
             >
               <MessageSquare className="h-3.5 w-3.5" />
               Playground
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("pets")}
+              className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-xs font-medium transition-colors ${
+                activeTab === "pets"
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <Sparkles className="h-3.5 w-3.5" />
+                Pet Store
+              </span>
+              <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                {PET_CATALOG.length}
+              </Badge>
             </button>
           </nav>
 
@@ -779,8 +851,12 @@ export default function App() {
                           className="h-8 w-full rounded-md border border-border bg-input px-2.5 text-xs text-foreground outline-none"
                         >
                           <option value="deepseek">DeepSeek</option>
-                          <option value="gemini">Gemini</option>
-                          <option value="metaai">Meta AI</option>
+                          <option value="gemini" disabled className="text-muted-foreground/45">
+                            Gemini (Coming soon)
+                          </option>
+                          <option value="metaai" disabled className="text-muted-foreground/45">
+                            Meta AI (Coming soon)
+                          </option>
                         </select>
                       </div>
 
@@ -859,6 +935,127 @@ export default function App() {
                   )}
                 </CardContent>
               </Card>
+              </div>
+            </div>
+          )}
+
+          {/* PET STORE TAB */}
+          {activeTab === "pets" && (
+            <div className="flex h-full min-h-0 flex-col gap-4">
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-base font-semibold tracking-tight">Pet Store</h2>
+                  <p className="text-xs text-muted-foreground">
+                    Choose your floating desktop pet companion. Chat history &amp; selection are saved in SQLite.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-card p-0.5 text-[11px]">
+                    {(
+                      [
+                        "idle",
+                        "happy",
+                        "wink",
+                        "shy",
+                        "annoyed",
+                        "typing",
+                        "thinking",
+                        "waiting",
+                        "streaming",
+                        "done",
+                        "error",
+                      ] as PetStatus[]
+                    ).map((st) => (
+                      <button
+                        key={st}
+                        type="button"
+                        onClick={() => setPreviewPetStatus(st)}
+                        className={`rounded px-2 py-1 capitalize transition-colors ${
+                          previewPetStatus === st
+                            ? "bg-primary text-primary-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {st}
+                      </button>
+                    ))}
+                  </div>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    className="h-7 gap-1.5 text-xs"
+                    onClick={() => void invoke("summon_pet_window").catch(() => {})}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    Bring Pet Here
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5 text-xs"
+                    onClick={() => void invoke("toggle_pet_window").catch(() => {})}
+                  >
+                    Show / Hide Pet
+                  </Button>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {PET_CATALOG.map((pet) => {
+                    const isEquipped = selectedPetId === pet.id;
+                    return (
+                      <Card
+                        key={pet.id}
+                        className={`flex flex-col justify-between transition-colors ${
+                          isEquipped ? "border-primary/70 bg-primary/5" : "hover:border-border/80"
+                        }`}
+                      >
+                        <CardHeader className="pb-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <CardTitle className="text-sm">{pet.name}</CardTitle>
+                              <CardDescription className="text-[11px]">{pet.badge}</CardDescription>
+                            </div>
+                            {isEquipped && (
+                              <Badge variant="default" className="h-5 gap-1 px-1.5 text-[10px]">
+                                <Check className="h-3 w-3" />
+                                Equipped
+                              </Badge>
+                            )}
+                          </div>
+                        </CardHeader>
+                        <CardContent className="flex flex-col items-center gap-3 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleSelectPet(pet.id);
+                              void invoke("summon_pet_window").catch(() => {});
+                            }}
+                            title="Click to equip & summon pet to app window"
+                            className="flex h-28 w-full cursor-pointer items-center justify-center rounded-lg border border-border/60 bg-secondary/40 transition-colors hover:border-primary/60 hover:bg-secondary/70"
+                          >
+                            <PetSprite petId={pet.id} status={previewPetStatus} size="lg" />
+                          </button>
+                          <p className="text-center text-xs text-muted-foreground">
+                            {pet.tagline}
+                          </p>
+                          <Button
+                            size="sm"
+                            variant={isEquipped ? "secondary" : "default"}
+                            className="h-7 w-full text-xs"
+                            onClick={() => {
+                              void handleSelectPet(pet.id);
+                              void invoke("summon_pet_window").catch(() => {});
+                            }}
+                          >
+                            {isEquipped ? "Equipped · Bring Here" : "Equip & Summon"}
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           )}

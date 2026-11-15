@@ -64,6 +64,26 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    pet_sessions (session_id) {
+        session_id -> Text,
+        title -> Text,
+        model -> Text,
+        created_at -> Text,
+        updated_at -> Text,
+    }
+}
+
+diesel::table! {
+    pet_messages (id) {
+        id -> Integer,
+        session_id -> Text,
+        role -> Text,
+        content -> Text,
+        created_at -> Text,
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error("sqlite connection error: {0}")]
@@ -262,6 +282,25 @@ impl Database {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS pet_sessions (
+                session_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_pet_sessions_updated_at ON pet_sessions(updated_at);
+
+            CREATE TABLE IF NOT EXISTS pet_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(session_id) REFERENCES pet_sessions(session_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_pet_messages_session_id ON pet_messages(session_id, id);
             ",
         )?;
 
@@ -635,4 +674,256 @@ impl Database {
             .execute(&mut *conn)?;
         Ok(())
     }
+
+    pub fn get_pet_state(&self) -> Result<PetState, DbError> {
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        let selected_pet_id = system_settings::table
+            .find("pet_selected_id")
+            .select(system_settings::value)
+            .first::<String>(&mut *conn)
+            .optional()?
+            .unwrap_or_else(|| "fox".to_string());
+
+        let sessions = pet_sessions::table
+            .order(pet_sessions::updated_at.desc())
+            .limit(30)
+            .select(PetSession::as_select())
+            .load::<PetSession>(&mut *conn)?;
+
+        let saved_active = system_settings::table
+            .find("pet_active_session_id")
+            .select(system_settings::value)
+            .first::<String>(&mut *conn)
+            .optional()?;
+
+        let active_session_id = saved_active
+            .filter(|id| sessions.iter().any(|s| &s.session_id == id))
+            .or_else(|| sessions.first().map(|s| s.session_id.clone()));
+
+        let messages = if let Some(ref sid) = active_session_id {
+            pet_messages::table
+                .filter(pet_messages::session_id.eq(sid))
+                .order(pet_messages::id.asc())
+                .select(PetMessage::as_select())
+                .load::<PetMessage>(&mut *conn)?
+        } else {
+            Vec::new()
+        };
+
+        Ok(PetState {
+            selected_pet_id,
+            active_session_id,
+            sessions,
+            messages,
+        })
+    }
+
+    pub fn set_selected_pet(&self, pet_id: &str) -> Result<(), DbError> {
+        self.set_setting("pet_selected_id", pet_id)
+    }
+
+    pub fn create_pet_session(
+        &self,
+        session_id: &str,
+        title: &str,
+        model: &str,
+    ) -> Result<PetSession, DbError> {
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        let now = Utc::now().to_rfc3339();
+        let existing = pet_sessions::table
+            .find(session_id)
+            .select(PetSession::as_select())
+            .first::<PetSession>(&mut *conn)
+            .optional()?;
+
+        if let Some(session) = existing {
+            diesel::replace_into(system_settings::table)
+                .values((
+                    system_settings::key.eq("pet_active_session_id"),
+                    system_settings::value.eq(session_id),
+                ))
+                .execute(&mut *conn)?;
+            return Ok(session);
+        }
+
+        let clean_title = if title.trim().is_empty() {
+            "New Pet Chat"
+        } else {
+            title.trim()
+        };
+        diesel::insert_into(pet_sessions::table)
+            .values(NewPetSessionRow {
+                session_id,
+                title: clean_title,
+                model,
+                created_at: &now,
+                updated_at: &now,
+            })
+            .execute(&mut *conn)?;
+
+        diesel::replace_into(system_settings::table)
+            .values((
+                system_settings::key.eq("pet_active_session_id"),
+                system_settings::value.eq(session_id),
+            ))
+            .execute(&mut *conn)?;
+
+        Ok(PetSession {
+            session_id: session_id.to_string(),
+            title: clean_title.to_string(),
+            model: model.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+    }
+
+    pub fn append_pet_message(
+        &self,
+        session_id: &str,
+        title_if_new: &str,
+        model: &str,
+        role: &str,
+        content: &str,
+    ) -> Result<PetMessage, DbError> {
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        let now = Utc::now().to_rfc3339();
+
+        let exists = pet_sessions::table
+            .find(session_id)
+            .select(pet_sessions::session_id)
+            .first::<String>(&mut *conn)
+            .optional()?;
+
+        if exists.is_none() {
+            let trimmed = title_if_new.trim();
+            let title: String = if trimmed.is_empty() {
+                "New Pet Chat".to_string()
+            } else {
+                trimmed.chars().take(48).collect()
+            };
+            diesel::insert_into(pet_sessions::table)
+                .values(NewPetSessionRow {
+                    session_id,
+                    title: &title,
+                    model,
+                    created_at: &now,
+                    updated_at: &now,
+                })
+                .execute(&mut *conn)?;
+        } else {
+            diesel::update(pet_sessions::table.find(session_id))
+                .set((
+                    pet_sessions::updated_at.eq(&now),
+                    pet_sessions::model.eq(model),
+                ))
+                .execute(&mut *conn)?;
+        }
+
+        diesel::insert_into(pet_messages::table)
+            .values(NewPetMessageRow {
+                session_id,
+                role,
+                content,
+                created_at: &now,
+            })
+            .execute(&mut *conn)?;
+
+        diesel::replace_into(system_settings::table)
+            .values((
+                system_settings::key.eq("pet_active_session_id"),
+                system_settings::value.eq(session_id),
+            ))
+            .execute(&mut *conn)?;
+
+        let msg = pet_messages::table
+            .filter(pet_messages::session_id.eq(session_id))
+            .order(pet_messages::id.desc())
+            .select(PetMessage::as_select())
+            .first::<PetMessage>(&mut *conn)?;
+
+        Ok(msg)
+    }
+
+    pub fn select_pet_session(&self, session_id: &str) -> Result<Vec<PetMessage>, DbError> {
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        diesel::replace_into(system_settings::table)
+            .values((
+                system_settings::key.eq("pet_active_session_id"),
+                system_settings::value.eq(session_id),
+            ))
+            .execute(&mut *conn)?;
+
+        let messages = pet_messages::table
+            .filter(pet_messages::session_id.eq(session_id))
+            .order(pet_messages::id.asc())
+            .select(PetMessage::as_select())
+            .load::<PetMessage>(&mut *conn)?;
+        Ok(messages)
+    }
+
+    pub fn delete_pet_session(&self, session_id: &str) -> Result<bool, DbError> {
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        diesel::delete(pet_messages::table.filter(pet_messages::session_id.eq(session_id)))
+            .execute(&mut *conn)?;
+        let deleted = diesel::delete(pet_sessions::table.find(session_id)).execute(&mut *conn)?;
+        if let Some(active) = system_settings::table
+            .find("pet_active_session_id")
+            .select(system_settings::value)
+            .first::<String>(&mut *conn)
+            .optional()?
+        {
+            if active == session_id {
+                diesel::delete(system_settings::table.find("pet_active_session_id"))
+                    .execute(&mut *conn)?;
+            }
+        }
+        Ok(deleted > 0)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Queryable, Selectable)]
+#[diesel(table_name = pet_sessions, check_for_backend(diesel::sqlite::Sqlite))]
+pub struct PetSession {
+    pub session_id: String,
+    pub title: String,
+    pub model: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = pet_sessions, check_for_backend(diesel::sqlite::Sqlite))]
+struct NewPetSessionRow<'a> {
+    session_id: &'a str,
+    title: &'a str,
+    model: &'a str,
+    created_at: &'a str,
+    updated_at: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Queryable, Selectable)]
+#[diesel(table_name = pet_messages, check_for_backend(diesel::sqlite::Sqlite))]
+pub struct PetMessage {
+    pub id: i32,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = pet_messages, check_for_backend(diesel::sqlite::Sqlite))]
+struct NewPetMessageRow<'a> {
+    session_id: &'a str,
+    role: &'a str,
+    content: &'a str,
+    created_at: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PetState {
+    pub selected_pet_id: String,
+    pub active_session_id: Option<String>,
+    pub sessions: Vec<PetSession>,
+    pub messages: Vec<PetMessage>,
 }

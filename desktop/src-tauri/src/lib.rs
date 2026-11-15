@@ -18,6 +18,7 @@ use openai::{ChatCompletionRequest, ChatCompletionResponse, ModelList};
 use providers::{ProviderCredentials, ProviderRegistry};
 use serde::Serialize;
 use serde_json::Map;
+use tauri::Emitter;
 use server::{run_http_server, AppState};
 use session::VirtualSessionManager;
 use tauri::{
@@ -194,6 +195,54 @@ fn db_delete_api_key(db: tauri::State<'_, Arc<Database>>, key: String) -> Result
     db.delete_api_key(&key).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn toggle_pet_window(app: tauri::AppHandle) -> bool {
+    if let Some(win) = app.get_webview_window("pet") {
+        let visible = win.is_visible().unwrap_or(false);
+        if visible {
+            let _ = win.hide();
+            return false;
+        }
+        let _ = win.show();
+        let _ = win.set_focus();
+        return true;
+    }
+    false
+}
+
+#[tauri::command]
+fn open_main_window(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+#[tauri::command]
+fn summon_pet_window(app: tauri::AppHandle) -> bool {
+    let Some(pet) = app.get_webview_window("pet") else {
+        return false;
+    };
+    if let Some(main) = app.get_webview_window("main") {
+        if let (Ok(pos), Ok(size), Ok(pet_size)) = (
+            main.outer_position(),
+            main.outer_size(),
+            pet.outer_size(),
+        ) {
+            let target_x = pos.x + size.width as i32 - pet_size.width as i32 - 24;
+            let target_y = pos.y + size.height as i32 - pet_size.height as i32 - 24;
+            let _ = pet.set_position(tauri::PhysicalPosition::new(
+                target_x.max(0),
+                target_y.max(0),
+            ));
+        }
+    }
+    let _ = pet.show();
+    let _ = pet.set_focus();
+    let _ = app.emit("pet:status", serde_json::json!({ "status": "done" }));
+    true
+}
+
 #[cfg(target_os = "macos")]
 fn set_macos_dock_icon() {
     use objc2::AnyThread;
@@ -238,6 +287,7 @@ pub fn run() {
                 registry: provider_registry.clone(),
                 load_balancer,
                 session_manager,
+                app_handle: Some(app.handle().clone()),
             };
 
             let server_manager = ServerManager {
@@ -251,18 +301,70 @@ pub fn run() {
             app.manage(database);
             app.manage(server_manager);
 
-            #[cfg(target_os = "macos")]
+            #[tauri::command]
+fn toggle_pet_window(app: tauri::AppHandle) -> bool {
+    if let Some(win) = app.get_webview_window("pet") {
+        let visible = win.is_visible().unwrap_or(false);
+        if visible {
+            let _ = win.hide();
+            return false;
+        }
+        let _ = win.show();
+        let _ = win.set_focus();
+        return true;
+    }
+    false
+}
+
+#[tauri::command]
+fn open_main_window(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+#[tauri::command]
+fn summon_pet_window(app: tauri::AppHandle) -> bool {
+    let Some(pet) = app.get_webview_window("pet") else {
+        return false;
+    };
+    if let Some(main) = app.get_webview_window("main") {
+        if let (Ok(pos), Ok(size), Ok(pet_size)) = (
+            main.outer_position(),
+            main.outer_size(),
+            pet.outer_size(),
+        ) {
+            let target_x = pos.x + size.width as i32 - pet_size.width as i32 - 24;
+            let target_y = pos.y + size.height as i32 - pet_size.height as i32 - 24;
+            let _ = pet.set_position(tauri::PhysicalPosition::new(
+                target_x.max(0),
+                target_y.max(0),
+            ));
+        }
+    }
+    let _ = pet.show();
+    let _ = pet.set_focus();
+    let _ = app.emit("pet:status", serde_json::json!({ "status": "done" }));
+    true
+}
+
+#[cfg(target_os = "macos")]
             set_macos_dock_icon();
 
             let show_item =
                 MenuItem::with_id(app, "show", "Open Web2AI API", true, None::<&str>)?;
+            let pet_item =
+                MenuItem::with_id(app, "toggle_pet", "Show/Hide Pet", true, None::<&str>)?;
             let docs_item =
                 MenuItem::with_id(app, "docs", "Open API Docs", true, None::<&str>)?;
             let restart_item =
                 MenuItem::with_id(app, "restart", "Restart Backend", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu =
-                Menu::with_items(app, &[&show_item, &docs_item, &restart_item, &quit_item])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show_item, &pet_item, &docs_item, &restart_item, &quit_item],
+            )?;
 
             let mut tray_builder = TrayIconBuilder::new().menu(&menu);
             if let Some(icon) = app.default_window_icon() {
@@ -271,10 +373,10 @@ pub fn run() {
             tray_builder
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
+                        open_main_window(app.clone());
+                    }
+                    "toggle_pet" => {
+                        toggle_pet_window(app.clone());
                     }
                     "docs" => {
                         let _ = app
@@ -309,7 +411,10 @@ pub fn run() {
             db_delete_profile,
             db_list_api_keys,
             db_create_api_key,
-            db_delete_api_key
+            db_delete_api_key,
+            toggle_pet_window,
+            open_main_window,
+            summon_pet_window
         ])
         .build(tauri::generate_context!())
         .expect("error while building Web2AI API desktop application");
