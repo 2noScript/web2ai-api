@@ -3,19 +3,33 @@ pub mod gemini;
 pub mod metaai;
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::Stream;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::openai::{ChatCompletionRequest, ChatCompletionResponse, ModelList, ModelObject};
+use crate::session::ImageAttachment;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProviderCredentials {
+    pub profile_id: Option<String>,
     pub token: Option<String>,
     pub cookie: Option<String>,
 }
+
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    Content(String),
+    Reasoning(String),
+    SessionMeta(Map<String, Value>),
+}
+
+pub type ProviderStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send>>;
 
 #[derive(Debug, Error)]
 pub enum ProviderError {
@@ -41,7 +55,19 @@ pub trait Provider: Send + Sync {
         &self,
         credentials: &ProviderCredentials,
         request: &ChatCompletionRequest,
+        session_data: &mut Map<String, Value>,
+        attachments: &[ImageAttachment],
     ) -> Result<ChatCompletionResponse, ProviderError>;
+
+    async fn chat_completions_stream(
+        &self,
+        credentials: &ProviderCredentials,
+        request: &ChatCompletionRequest,
+        session_data: &Map<String, Value>,
+        attachments: &[ImageAttachment],
+    ) -> Result<ProviderStream, ProviderError>;
+
+    async fn invalidate_profile(&self, _profile_id: &str) {}
 }
 
 pub struct ProviderRegistry {

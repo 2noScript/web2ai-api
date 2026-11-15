@@ -2,138 +2,116 @@
 
 ## Overview
 
-This project is a **unified OpenAI-compatible API gateway** with dynamic multi-profile load balancing, proxying requests to DeepSeek and Gemini:
+This project is a **unified OpenAI-compatible API gateway** with dynamic multi-profile load balancing, virtual session management, a Web Dashboard, and a **Tauri v2 Desktop Application**, proxying requests to **DeepSeek**, **Gemini**, and **MetaAI**:
 
-| Provider | SDK Type | Async/Sync | Auth Method |
+| Provider | Python SDK / Client | Async/Sync | Auth Method |
 |---|---|---|---|
-| DeepSeek | Vendored (`sys.path`) | Sync → ThreadPoolExecutor | Profile Token |
-| Gemini | Vendored (`sys.path`) | Async | Profile Cookie |
+| DeepSeek | Vendored (`deepseek-api/`) | Sync → ThreadPoolExecutor | Profile Token |
+| Gemini | Vendored (`Gemini-API/`) | Async (`curl_cffi`) | Profile Cookie |
+| MetaAI | Vendored (`metaai-api/`) | Sync → ThreadPoolExecutor | Profile Cookie |
 
-Both providers expose two OpenAI-compatible endpoints (`/models`, `/chat/completions`) plus profile management endpoints (`/v1/profiles`).
+All providers expose OpenAI-compatible endpoints (`/v1/{provider}/models`, `/v1/{provider}/chat/completions`), alongside profile management (`/v1/profiles`) and API key management (`/v1/keys`).
 
 ---
 
 ## Project Structure
 
 ```
-unofficial-api/
+web2ai-api/
 ├── core/
-│   ├── server.py              # FastAPI app, lifespan, router registration
-│   ├── profile.py             # Profile storage (profiles.json) & CRUD
-│   ├── load_balancer.py       # Multi-profile Round-Robin load balancer & session affinity
+│   ├── server.py              # FastAPI app, lifespan, middleware & router registration
+│   ├── db.py                  # SQLite initialization & connection helper (unofficial_api.db)
+│   ├── profile.py             # Profile CRUD & request count tracking
+│   ├── load_balancer.py       # Multi-profile Round-Robin load balancer & sticky affinity
 │   ├── schemas.py             # Shared Pydantic models
-│   └── routers/
-│       ├── deepseek/           # DeepSeek routes (models, chat/completions)
-│       ├── gemini/             # Gemini routes + connection pool (pool.py)
-│       ├── profiles/           # Profile management CRUD routes
-│       └── keys/               # API key management routes
-├── deepseek-api/         # Vendored SDK (git submodule)
-├── Gemini-API/           # Vendored SDK (git submodule)
-├── data/                 # Data directory (unofficial_api.db SQLite database & legacy files)
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── CONVERSION.md
-│   ├── auth.md
-│   ├── deepseek.md
-│   └── gemini.md
-│   ├── gemini.md
-│   ├── grok.md
-│   ├── metaai.md
-│   ├── notebooklm.md
-│   └── notebooklm-artifacts.md
+│   ├── utils.py               # Shared helpers
+│   ├── routers/
+│   │   ├── deepseek/          # DeepSeek routes (models, chat/completions)
+│   │   ├── gemini/            # Gemini routes + client connection pool (pool.py)
+│   │   ├── metaai/            # MetaAI routes (models, chat/completions)
+│   │   ├── profiles/          # Profile management CRUD routes
+│   │   └── keys/              # API key generation/listing/revocation routes
+│   ├── services/              # ChatService + provider strategy implementations
+│   └── session/               # VirtualSessionMiddleware, session store, history, API key auth
+├── desktop/                   # Tauri v2 Desktop App (React + Vite + Rust)
+│   ├── src/                   # Desktop React UI (communicates with local gateway)
+│   └── src-tauri/             # Native Rust layer (tray, backend manager, Diesel DB, partial providers)
+├── web/                       # Standalone Web Management Dashboard (React + Vite)
+├── deepseek-api/              # Vendored DeepSeek SDK
+├── Gemini-API/                # Vendored Gemini SDK
+├── metaai-api/                # Vendored MetaAI SDK
+├── data/                      # SQLite database (unofficial_api.db) & machine_id
+├── docs/                      # Project documentation
 ├── Dockerfile
 ├── docker-compose.yml
 ├── pyproject.toml
-├── .env.example
 ├── README.md
 └── run.sh
 ```
 
-### Router Pattern
+---
 
-Each provider follows the same convention:
+## Desktop Application (`desktop/`)
 
-1. **`router.py`** — Creates and exports a single `APIRouter()` instance
-2. **`__init__.py`** — Imports the router and all handler modules (so endpoints register via `@router.get/post/...` decorators)
-3. **Handler files** — Each file imports `from .router import router` and decorates functions
+The desktop app wraps the gateway into a native macOS/Windows/Linux application using **Tauri v2**:
 
-NotebookLM uses a flat file-per-feature approach (3 files). Other providers use fewer files since they have fewer routes.
+- **Frontend (`desktop/src/`)**: Built with React 19, Vite, and Tailwind CSS v4. It connects over HTTP to `http://127.0.0.1:8088` (`desktop/src/lib/api.ts`) for `/health`, `/v1/profiles`, `/v1/keys`, and `/v1/{provider}/chat/completions`.
+- **Native Rust Layer (`desktop/src-tauri/src/`)**:
+  - **Backend Process Manager (`lib.rs`)**: On startup, checks whether `127.0.0.1:8088` is reachable. If not, locates the repository root (via `UNOFFICIAL_API_DIR`, working directory, or compile-time manifest path) and spawns `uvicorn core.server:app --host 127.0.0.1 --port 8088` using `.venv/bin/uvicorn` or `uv run uvicorn`. Stops the managed child process cleanly on exit.
+  - **System Tray (`lib.rs`)**: Provides **Open Unofficial API**, **Open API Docs**, **Restart Backend**, and **Quit**.
+  - **In-Progress Rust Port**: `src-tauri` also includes native Diesel SQLite bindings (`db/mod.rs`), OpenAI types (`openai.rs`), a `wreq` Chrome-emulated HTTP client (`http_client.rs`), and a partial DeepSeek implementation with `wasmi` PoW solving (`providers/deepseek/mod.rs`). Gemini and MetaAI are currently stubs, and an embedded Rust HTTP server + load balancer + session middleware are not yet implemented, so the desktop app still relies on `core/server.py` for runtime API serving.
+
+See [`desktop/README.md`](../desktop/README.md) for desktop setup, scripts, and migration details.
 
 ---
 
-## Lifecycle (`core/server.py`)
+## Backend Lifecycle (`core/server.py`)
 
-### Startup (`lifespan` context manager)
+### Startup & Shutdown (`lifespan`)
 
-On every server start:
-1. Loads `.env` via `dotenv`
-2. Inserts vendored SDKs into `sys.path`
-3. Creates and initializes each provider's client:
-   - **Gemini**: `GeminiClient(secure_1psid=..., secure_1psidts=...)` → `await client.init()`
-   - **NotebookLM**: `NotebookLMClient.from_storage(path=...)` → `await ctx.__aenter__()`
-   - **Meta AI**: `MetaAI(cookies={...})` — synchronous
-   - **Grok**: `GrokClient(cookies_str=..., user_agent=..., browser=...)` — async
-   - **DeepSeek**: initialized lazily per-request (stateless)
-4. Stores all clients on `app.state`
-
-If a client fails to initialize (missing credentials, network error), it logs a warning and sets the client to `None`. Subsequent requests return 503.
-
-### Shutdown
-
-- Gemini: `await client.close()`
-- NotebookLM: `await ctx.__aexit__()`
-- Meta AI, DeepSeek: no explicit cleanup needed (sync clients)
-- Grok: no explicit cleanup needed
+1. Loads `.env` via `python-dotenv` (`override=False`).
+2. Initializes the SQLite schema in `unofficial_api.db` via `core.db.init_db()`.
+3. Registers `VirtualSessionMiddleware` and `CORSMiddleware`.
+4. Mounts provider routers (`/v1/deepseek`, `/v1/gemini`, `/v1/metaai`), `/v1/keys`, and `/v1/profiles`.
+5. If `web/dist` exists, serves the static Web UI at `/` and `/ui`; otherwise redirects `/` to `/docs`.
+6. On shutdown, closes pooled Gemini clients (`await gemini_pool.close_all()`).
 
 ### Per-Request Flow
 
 ```mermaid
 sequenceDiagram
-    participant C as Client
-    participant S as Server
-    participant H as Handler
-    participant SDK as Vendor SDK
-    participant API as Provider API
+    participant C as Client / Desktop UI
+    participant M as VirtualSessionMiddleware
+    participant R as FastAPI Router
+    participant LB as ProfileLoadBalancer
+    participant S as ChatService / Strategy
+    participant API as Provider Web API
 
-    C->>S: POST /v1/{provider}/chat/completions
-    S->>H: Route to handler
-    H->>H: Validate request (Pydantic)
-    H->>H: Fetch client from app.state
-    alt client is None
-        H->>C: 503 Service Unavailable
+    C->>M: POST /v1/{provider}/chat/completions
+    M->>M: Validate API key & resolve X-Session-Id
+    M->>R: Forward request with session state
+    R->>LB: Select active profile (sticky or Round-Robin)
+    alt No active profile
+        LB-->>C: 503 Service Unavailable
     end
-    H->>SDK: Call SDK method
-    SDK->>API: HTTP/RPC to provider
-    API-->>SDK: Response
-    SDK-->>H: Python object
-    H->>H: Transform to OpenAI-compatible format
-    H-->>C: JSONResponse or StreamingResponse
+    R->>S: Execute strategy (DeepSeek / Gemini / MetaAI)
+    S->>API: HTTP / RPC / SSE request
+    API-->>S: Response stream or payload
+    S-->>R: Transform to OpenAI format
+    R-->>C: JSONResponse or SSE StreamingResponse (with X-Session-Id)
 ```
 
 ---
 
-## Client Architecture
+## Persistence (`core/db.py` & `unofficial_api.db`)
 
-### Sync Clients (DeepSeek, Meta AI)
+All runtime state is stored in SQLite (`data/unofficial_api.db` by default, configurable via `UNOFFICIAL_API_DATA_DIR`) in WAL mode:
 
-These SDKs use `requests` (synchronous). Since FastAPI is async, we wrap calls in `asyncio.get_event_loop().run_in_executor()` with a `ThreadPoolExecutor`.
-
-```python
-# Pattern used in handlers:
-loop = asyncio.get_event_loop()
-result = await loop.run_in_executor(None, lambda: sync_client.method(**params))
-```
-
-### Async Clients (Gemini, NotebookLM, Grok)
-
-These SDKs use `curl_cffi` / `aiohttp` / native `asyncio`. Handlers `await` them directly.
-
-```python
-# Geminin
-result = await client.chat.send_message(...)
-# NotebookLM
-result = await client.chat.ask(notebook_id=..., question=...)
-```
+- `profiles` — Provider credentials (`token` or `cookie`), `is_active`, `total_requests`, and hourly `request_counts`
+- `api_keys` — Generated API keys, names, `is_active`, `created_at`, `last_used`
+- `sessions` — Virtual session payloads (sticky `profile_id`, provider conversation IDs/metadata, timestamps)
+- `assistant_cache` — Prefix hashes of assistant messages mapped to `session_id` for stateless continuation
+- `system_settings` — Key-value settings (such as `machine_id`)
 
 ---
 
@@ -142,124 +120,13 @@ result = await client.chat.ask(notebook_id=..., question=...)
 | Provider | Type | Implementation |
 |---|---|---|
 | Gemini | Real SSE | `async for chunk in response: yield chunk` |
-| DeepSeek | Real SSE | Stream via WebSocket → SSE translation |
-| Meta AI | Real SSE | `response.iter_content(chunk_size=...)` |
-| Grok | Fake (async) | Receive full response from grok2api SDK, split by space, yield each word as SSE event |
-| NotebookLM | Fake | Receive full answer, split by `\n`, yield each line as SSE event |
+| DeepSeek | Real SSE | Streams upstream SSE events and translates to OpenAI delta chunks |
+| MetaAI | Real SSE | Streams upstream chunks and translates to OpenAI delta chunks |
 
 All providers normalize to the same SSE format:
+
 ```
 data: {"choices": [{"delta": {"content": "..."}}]}
 
 data: [DONE]
 ```
-
----
-
-## Authentication
-
-Each provider requires cookies extracted from a browser session.
-
-| Provider | Env Vars | Extraction Method |
-|---|---|---|
-| DeepSeek | `DEEPSEEK_COOKIE`, `DEEPSEEK_AUTH_TOKEN` | Browser DevTools → Network → Request Headers |
-| Gemini | `GEMINI_COOKIE` | Browser DevTools → Network → Request Headers |
-| NotebookLM | `NOTEBOOKLM_STORAGE_PATH` | CLI: `notebooklm login` → `storage_state.json` |
-| Meta AI | `META_AI_COOKIE` | Browser DevTools → Network → Request Headers |
-| Grok | `GROK_COOKIE`, `GROK_PROXY_USER_AGENT`, `GROK_PROXY_BROWSER` | Browser DevTools → Application → Cookies |
-
-Cookies expire. When requests start returning auth errors, re-extract and restart the server.
-
----
-
-## Vendor SDKs
-
-Five vendored SDK directories exist at the project root. They are standalone git repos (not submodules).
-
-| SDK | Provider | Repository |
-|---|---|---|
-| `deepseek-api/` | DeepSeek | [2noScript/deepseek-api](https://github.com/2noScript/deepseek-api) |
-| `Gemini-API/` | Gemini (Google) | [HanaokaYuzu/Gemini-API](https://github.com/HanaokaYuzu/Gemini-API) |
-| `grok2api/` | Grok (xAI) | [2noScript/grok2api](https://github.com/2noScript/grok2api) |
-| `notebooklm-py/` | NotebookLM (Google) | [2noScript/notebooklm-py](https://github.com/2noScript/notebooklm-py) |
-| `metaai-api/` | Meta AI | [2noScript/metaai-api](https://github.com/2noScript/metaai-api) |
-
-### `sys.path` inclusion (no pip needed)
-
-These SDKs are plain Python packages usable via `sys.path.insert`:
-
-```python
-# core/server.py
-sys.path.insert(0, os.path.join(BASE, "..", "Gemini-API/src"))
-sys.path.insert(0, os.path.join(BASE, "..", "metaai-api/src"))
-sys.path.insert(0, os.path.join(BASE, "..", "grok2api"))
-
-from gemini_webapi import GeminiClient       # from Gemini-API/src/gemini_webapi/
-from metaai_api import MetaAI                # from metaai-api/src/metaai_api/
-```
-
-DeepSeek uses:
-```python
-sys.path.insert(0, os.path.join(BASE, "..", "deepseek-api"))
-from deepseek_api import DeepseekClient
-```
-
-**Grok** uses a `sys.path` import (like DeepSeek, Gemini, Meta AI):
-```python
-sys.path.insert(0, os.path.join(BASE, "..", "grok2api"))
-from core.routers.grok.client import GrokClient  # wraps grok2api transport modules
-```
-
-**NotebookLM** is installed from PyPI:
-```bash
-pip install notebooklm-py>=0.7.2
-```
-
-### Dockerfile strategy
-
-```dockerfile
-COPY deepseek-api/ deepseek-api/
-COPY Gemini-API/ Gemini-API/
-COPY metaai-api/ metaai-api/
-COPY grok2api/ grok2api/
-COPY notebooklm-py/ notebooklm-py/
-
-# notebooklm-py is in [tool.uv.sources] as path dependency
-```
-
----
-
-## Error Handling
-
-- **Missing client** (not initialized/credentials missing) → `503 {"error": "Provider not initialized"}`
-- **SDK errors** → caught in `try/except Exception`, returned as `500 {"error": str(e)}`
-- **Validation errors** → FastAPI/Pydantic auto-422 with field details
-- **Provider auth errors** → bubble up from SDK as `Exception` messages (e.g., "Session expired")
-
-Common error response format:
-```json
-{"error": "Descriptive error message"}
-```
-
----
-
-## OpenAPI / Swagger
-
-All endpoints and models are auto-documented via FastAPI's OpenAPI integration. Each endpoint uses `summary=...` and Pydantic models with `Field(description=..., examples=...)`.
-
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-- OpenAPI JSON: `http://localhost:8000/openapi.json`
-
----
-
-## Docker
-
-Multi-platform image supporting `linux/amd64` and `linux/arm64`:
-
-```bash
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -t 2noscript/unofficial-api:latest --push .
-```
-
-`docker-compose.yml` mounts `.env` for credentials and sets `NOTEBOOKLM_STORAGE_PATH` to a host-mounted volume.

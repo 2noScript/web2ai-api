@@ -1,0 +1,12 @@
+{
+  "name": "web2ai-api",
+  "private": true,
+  "scripts": {
+    "dev": "cd desktop && bun run desktop:dev",
+    "build": "cd desktop && bun run desktop:build",
+    "typecheck": "cd desktop && bun run typecheck",
+    "lint": "cd desktop && bun run lint",
+    "test": "cargo test --manifest-path desktop/src-tauri/Cargo.toml",
+    "server": "cargo run --manifest-path desktop/src-tauri/Cargo.toml --bin gateway_server"
+  }
+}

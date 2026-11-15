@@ -36,7 +36,7 @@ Requests without a valid API Key or with a deactivated key will receive a `401 U
 
 ## ⚙️ Swagger UI Authorization
 
-To test endpoints directly from the Swagger interactive documentation (`http://localhost:8000/docs`):
+To test endpoints directly from the Swagger interactive documentation (`http://127.0.0.1:8088/docs` — or via **Open API Docs** in the Desktop App tray menu):
 1. Click the **Authorize** lock button in the top-right corner.
 2. Enter your generated API Key under either **HTTPBearer** (e.g., `ua-xxxxxxxx-xxxxxx-xxxxxxxx`) or **APIKeyHeader**.
 3. Click **Authorize** and then close the dialog.
@@ -58,7 +58,7 @@ The gateway provides endpoints for generating, listing, and revoking API keys. T
   ```
 * **cURL Example**:
   ```bash
-  curl -X POST http://localhost:8000/v1/keys/generate \
+  curl -X POST http://127.0.0.1:8088/v1/keys/generate \
     -H "Content-Type: application/json" \
     -d '{"name": "production-key"}'
   ```
@@ -75,7 +75,7 @@ Lists all keys. The keys returned are masked (e.g., `ua-740a3193-740296-e...`) f
 * **Endpoint**: `GET /v1/keys`
 * **cURL Example**:
   ```bash
-  curl http://localhost:8000/v1/keys
+  curl http://127.0.0.1:8088/v1/keys
   ```
 * **Response**:
   ```json
@@ -103,7 +103,7 @@ Deactivates an API key. Once revoked, the key will fail authentication check.
   ```
 * **cURL Example**:
   ```bash
-  curl -X POST http://localhost:8000/v1/keys/revoke \
+  curl -X POST http://127.0.0.1:8088/v1/keys/revoke \
     -H "Content-Type: application/json" \
     -d '{"api_key": "ua-740a3193-740296-efa2ec76"}'
   ```
@@ -116,9 +116,10 @@ Deactivates an API key. Once revoked, the key will fail authentication check.
   ```
 
 ### Key Storage
-API keys are persistently saved in JSON format.
-* **Default Path**: `~/.unofficial-api/api_keys.json`
+API keys are persistently stored in SQLite (`api_keys` table) inside `unofficial_api.db`.
+* **Default Path**: `data/unofficial_api.db` (or Tauri's `app_data_dir` when running the Desktop app standalone outside the repo)
 * **Configuration**: Override the base data directory by setting the `UNOFFICIAL_API_DATA_DIR` environment variable.
+* **Desktop UI**: You can also create, view, and delete API keys directly from the Desktop App's API Keys section.
 
 ---
 
@@ -150,7 +151,7 @@ x-session-id: e5608b0362dc47f4b941e1332515d7801782421723809
 #### Step 2: Continue the conversation
 In subsequent requests, pass the returned session ID in the headers to instruct the gateway to resume the same conversation thread:
 ```bash
-curl -X POST http://localhost:8000/v1/gemini/chat/completions \
+curl -X POST http://127.0.0.1:8088/v1/gemini/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "X-Session-Id: e5608b0362dc47f4b941e1332515d7801782421723809" \
   -H "Content-Type: application/json" \

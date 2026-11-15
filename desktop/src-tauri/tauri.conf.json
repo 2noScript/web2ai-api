@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Unofficial API",
+  "productName": "Web2AI",
   "version": "0.1.0",
-  "identifier": "com.unofficialapi.desktop",
+  "identifier": "com.web2ai.desktop",
   "build": {
     "beforeDevCommand": "bun run dev",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:5288",
     "beforeBuildCommand": "bun run build",
     "frontendDist": "../dist"
   },
@@ -17,7 +17,9 @@
     "windows": [
       {
         "label": "main",
-        "title": "Unofficial API Gateway",
+        "title": "Web2AI API",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "width": 1200,
         "height": 820,
         "minWidth": 960,

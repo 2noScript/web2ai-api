@@ -10,9 +10,11 @@
 > - **Not affiliated** with DeepSeek or Google
 > - For **prototypes, research, and personal projects** only
 
-OpenAI-compatible REST API for **DeepSeek** and **Gemini** with multi-profile dynamic load balancing and Web Management Dashboard.
+OpenAI-compatible REST API & **Desktop App** for **DeepSeek**, **Gemini**, and **MetaAI** with multi-profile dynamic load balancing and management dashboard.
 
-> 📖 [Architecture Overview](docs/ARCHITECTURE.md) — project structure, lifecycle, client types, streaming, auth, Docker
+> 🖥️ [Desktop App Guide](desktop/README.md) — Tauri v2 desktop app setup, tray integration, and Rust migration status
+>
+> 📖 [Architecture Overview](docs/ARCHITECTURE.md) — project structure, lifecycle, desktop architecture, streaming, auth
 >
 > 🔄 [Provider Conversion Details](docs/CONVERSION.md) — OpenAI field mapping per provider
 >
@@ -20,12 +22,24 @@ OpenAI-compatible REST API for **DeepSeek** and **Gemini** with multi-profile dy
 
 ## Quick Start
 
-### 1. Configure Environment
+### Option A: Desktop App (Tauri v2)
+
+```bash
+cd desktop
+bun install
+bun run desktop:dev
+```
+
+The desktop app automatically starts and manages the local backend on `http://127.0.0.1:8088` and provides a native window + system tray menu. See [`desktop/README.md`](desktop/README.md) for prerequisites and production build instructions.
+
+### Option B: Server / Docker
+
+#### 1. Configure Environment
 ```bash
 cp .env.example .env
 ```
 
-### 2. Run Application
+#### 2. Run Application
 
 **Via Docker (Recommended)**:
 ```bash
@@ -37,7 +51,7 @@ docker compose up -d
 ./run.sh
 ```
 
-### 3. Access Services
+#### 3. Access Services
 - **Web UI Dashboard**: http://localhost:8088/ui
 - **API Swagger Documentation**: http://localhost:8088/docs
 
@@ -48,7 +62,7 @@ docker compose up -d
 
 ## Profiles & Load Balancing
 
-Credentials are stored and managed via **Profiles** saved in `data/profiles.json` (or managed dynamically via the Web Dashboard / REST API).
+Credentials are stored and managed via **Profiles** in SQLite (`data/unofficial_api.db`) and can be managed dynamically via the **Desktop App**, Web Dashboard, or REST API.
 
 - **Multi-Profile Load Balancing**: Chat completion requests automatically load-balance across active profiles (`is_active: true`) using a Round-Robin algorithm.
 - **Session-Profile Sticky Affinity**: When passing `X-Session-Id`, the conversation binds to a specific profile to ensure multi-turn context continuity. If the profile becomes inactive, auto-failover seamlessly routes to another active profile.

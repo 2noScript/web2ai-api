@@ -8,11 +8,11 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
   server: {
-    port: 5173,
+    port: 5288,
     strictPort: true,
     proxy: {
       "/health": "http://127.0.0.1:8088",

@@ -1,32 +1,41 @@
+pub mod chat_service;
 pub mod db;
 pub mod http_client;
+pub mod load_balancer;
 pub mod openai;
 pub mod providers;
+pub mod server;
+pub mod session;
 
 use std::net::{SocketAddr, TcpStream};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use db::{ApiKey, CreateProfileInput, Database, Profile, UpdateProfileInput};
+use load_balancer::ProfileLoadBalancer;
 use openai::{ChatCompletionRequest, ChatCompletionResponse, ModelList};
 use providers::{ProviderCredentials, ProviderRegistry};
 use serde::Serialize;
+use serde_json::Map;
+use server::{run_http_server, AppState};
+use session::VirtualSessionManager;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     Manager, RunEvent,
 };
 use tauri_plugin_opener::OpenerExt;
+use tokio::sync::watch;
 
 const BACKEND_HOST: &str = "127.0.0.1";
 const BACKEND_PORT: u16 = 8088;
 const BACKEND_URL: &str = "http://127.0.0.1:8088";
 
-struct BackendState {
-    child: Mutex<Option<Child>>,
-    project_dir: Option<PathBuf>,
+struct ServerManager {
+    shutdown_tx: Mutex<Option<watch::Sender<bool>>>,
+    app_state: AppState,
+    data_dir: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -44,166 +53,83 @@ fn is_backend_reachable() -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
 }
 
-fn has_server_py(dir: &Path) -> bool {
-    dir.join("core").join("server.py").is_file()
+fn resolve_db_path(app: &tauri::App) -> PathBuf {
+    let data_dir = std::env::var("WEB2AI_DATA_DIR")
+        .or_else(|_| std::env::var("UNOFFICIAL_API_DATA_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            app.path()
+                .app_data_dir()
+                .expect("failed to resolve app data dir")
+        });
+
+    let target_db = data_dir.join("web2ai.db");
+    if !target_db.is_file() {
+        let legacy_db = data_dir.join("unofficial_api.db");
+        if legacy_db.is_file() {
+            let _ = std::fs::create_dir_all(&data_dir);
+            let _ = std::fs::copy(&legacy_db, &target_db);
+        }
+    }
+
+    target_db
 }
 
-fn resolve_project_dir() -> Option<PathBuf> {
-    if let Ok(env_dir) = std::env::var("UNOFFICIAL_API_DIR") {
-        let p = PathBuf::from(env_dir);
-        if has_server_py(&p) {
-            return Some(p);
-        }
+fn start_embedded_server(manager: &ServerManager) {
+    let mut guard = manager.shutdown_tx.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_some() {
+        return;
     }
 
-    if let Ok(cwd) = std::env::current_dir() {
-        for candidate in [Some(cwd.as_path()), cwd.parent(), cwd.parent().and_then(|p| p.parent())]
-        {
-            if let Some(dir) = candidate {
-                if has_server_py(dir) {
-                    return Some(dir.to_path_buf());
-                }
-            }
-        }
-    }
+    let (tx, rx) = watch::channel(false);
+    *guard = Some(tx);
 
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if let Some(root) = manifest_dir.parent().and_then(|p| p.parent()) {
-        if has_server_py(root) {
-            return Some(root.to_path_buf());
-        }
-    }
+    let addr: SocketAddr = format!("{BACKEND_HOST}:{BACKEND_PORT}")
+        .parse()
+        .expect("valid socket addr");
+    let state = manager.app_state.clone();
 
-    None
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = run_http_server(addr, state, rx).await {
+            eprintln!("[web2ai] Embedded Rust HTTP server error: {err}");
+        }
+    });
 }
 
-fn find_uv_binary() -> Option<PathBuf> {
-    let mut candidates = vec![
-        PathBuf::from("uv"),
-        PathBuf::from("/opt/homebrew/bin/uv"),
-        PathBuf::from("/usr/local/bin/uv"),
-    ];
-    if let Ok(home) = std::env::var("HOME") {
-        candidates.push(PathBuf::from(&home).join(".local/bin/uv"));
-        candidates.push(PathBuf::from(&home).join(".cargo/bin/uv"));
-    }
-
-    for candidate in candidates {
-        if candidate.is_absolute() {
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        } else if Command::new(&candidate)
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok()
-        {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn spawn_backend(project_dir: &Path) -> Result<Child, String> {
-    let venv_uvicorn = project_dir.join(".venv").join("bin").join("uvicorn");
-    let mut cmd = if venv_uvicorn.is_file() {
-        let mut c = Command::new(venv_uvicorn);
-        c.args([
-            "core.server:app",
-            "--host",
-            BACKEND_HOST,
-            "--port",
-            &BACKEND_PORT.to_string(),
-        ]);
-        c
-    } else if let Some(uv) = find_uv_binary() {
-        let mut c = Command::new(uv);
-        c.args([
-            "run",
-            "uvicorn",
-            "core.server:app",
-            "--host",
-            BACKEND_HOST,
-            "--port",
-            &BACKEND_PORT.to_string(),
-        ]);
-        c
-    } else {
-        return Err("Neither .venv/bin/uvicorn nor uv was found".to_string());
-    };
-
-    cmd.current_dir(project_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-
-    cmd.spawn()
-        .map_err(|e| format!("Failed to spawn backend server: {e}"))
-}
-
-fn ensure_backend_started(state: &BackendState) -> Result<(), String> {
-    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
-    if let Some(child) = guard.as_mut() {
-        if child.try_wait().map_err(|e| e.to_string())?.is_none() {
-            return Ok(());
-        }
-        *guard = None;
-    }
-
-    if is_backend_reachable() {
-        return Ok(());
-    }
-
-    let Some(project_dir) = state.project_dir.as_ref() else {
-        return Err("Could not locate project root containing core/server.py".to_string());
-    };
-
-    let child = spawn_backend(project_dir)?;
-    *guard = Some(child);
-    Ok(())
-}
-
-fn stop_managed_backend(state: &BackendState) {
-    if let Ok(mut guard) = state.child.lock() {
-        if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+fn stop_embedded_server(manager: &ServerManager) {
+    let mut guard = manager.shutdown_tx.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(tx) = guard.take() {
+        let _ = tx.send(true);
     }
 }
 
 #[tauri::command]
-fn get_backend_status(state: tauri::State<'_, BackendState>) -> BackendStatus {
-    let managed = state
-        .child
+fn get_backend_status(manager: tauri::State<'_, ServerManager>) -> BackendStatus {
+    let managed = manager
+        .shutdown_tx
         .lock()
-        .ok()
-        .and_then(|mut g| g.as_mut().and_then(|c| c.try_wait().ok().flatten().map(|_| false)).or_else(|| g.as_ref().map(|_| true)))
+        .map(|g| g.is_some())
         .unwrap_or(false);
 
     BackendStatus {
         running: is_backend_reachable(),
         managed,
         url: BACKEND_URL.to_string(),
-        project_dir: state
-            .project_dir
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string()),
+        project_dir: Some(manager.data_dir.to_string_lossy().to_string()),
     }
 }
 
 #[tauri::command]
-fn restart_backend(state: tauri::State<'_, BackendState>) -> Result<BackendStatus, String> {
-    stop_managed_backend(&state);
-    ensure_backend_started(&state)?;
-    Ok(get_backend_status(state))
+fn restart_backend(manager: tauri::State<'_, ServerManager>) -> Result<BackendStatus, String> {
+    stop_embedded_server(&manager);
+    std::thread::sleep(Duration::from_millis(150));
+    start_embedded_server(&manager);
+    Ok(get_backend_status(manager))
 }
 
 #[tauri::command]
 fn list_provider_models(
-    registry: tauri::State<'_, ProviderRegistry>,
+    registry: tauri::State<'_, Arc<ProviderRegistry>>,
     provider_id: Option<String>,
 ) -> ModelList {
     registry.list_models(provider_id.as_deref())
@@ -211,7 +137,7 @@ fn list_provider_models(
 
 #[tauri::command]
 async fn provider_chat_completions(
-    registry: tauri::State<'_, ProviderRegistry>,
+    registry: tauri::State<'_, Arc<ProviderRegistry>>,
     provider_id: String,
     credentials: ProviderCredentials,
     request: ChatCompletionRequest,
@@ -219,20 +145,21 @@ async fn provider_chat_completions(
     let provider = registry
         .get(&provider_id)
         .ok_or_else(|| format!("unknown provider `{provider_id}`"))?;
+    let mut session_data = Map::new();
     provider
-        .chat_completions(&credentials, &request)
+        .chat_completions(&credentials, &request, &mut session_data, &[])
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn db_list_profiles(db: tauri::State<'_, Database>) -> Result<Vec<Profile>, String> {
+fn db_list_profiles(db: tauri::State<'_, Arc<Database>>) -> Result<Vec<Profile>, String> {
     db.list_profiles().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn db_create_profile(
-    db: tauri::State<'_, Database>,
+    db: tauri::State<'_, Arc<Database>>,
     input: CreateProfileInput,
 ) -> Result<Profile, String> {
     db.create_profile(input).map_err(|e| e.to_string())
@@ -240,7 +167,7 @@ fn db_create_profile(
 
 #[tauri::command]
 fn db_update_profile(
-    db: tauri::State<'_, Database>,
+    db: tauri::State<'_, Arc<Database>>,
     id: String,
     input: UpdateProfileInput,
 ) -> Result<Profile, String> {
@@ -248,60 +175,87 @@ fn db_update_profile(
 }
 
 #[tauri::command]
-fn db_delete_profile(db: tauri::State<'_, Database>, id: String) -> Result<usize, String> {
+fn db_delete_profile(db: tauri::State<'_, Arc<Database>>, id: String) -> Result<usize, String> {
     db.delete_profile(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn db_list_api_keys(db: tauri::State<'_, Database>) -> Result<Vec<ApiKey>, String> {
+fn db_list_api_keys(db: tauri::State<'_, Arc<Database>>) -> Result<Vec<ApiKey>, String> {
     db.list_api_keys().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn db_create_api_key(db: tauri::State<'_, Database>, name: String) -> Result<ApiKey, String> {
+fn db_create_api_key(db: tauri::State<'_, Arc<Database>>, name: String) -> Result<ApiKey, String> {
     db.create_api_key(&name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn db_delete_api_key(db: tauri::State<'_, Database>, key: String) -> Result<usize, String> {
+fn db_delete_api_key(db: tauri::State<'_, Arc<Database>>, key: String) -> Result<usize, String> {
     db.delete_api_key(&key).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon() {
+    use objc2::AnyThread;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::{MainThreadMarker, NSData};
+
+    if let Some(mtm) = MainThreadMarker::new() {
+        let icon_bytes = include_bytes!("../icons/128x128@2x.png");
+        let data = NSData::with_bytes(icon_bytes);
+        if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+            let ns_app = NSApplication::sharedApplication(mtm);
+            unsafe {
+                ns_app.setApplicationIconImage(Some(&image));
+            }
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let project_dir = resolve_project_dir();
-    let backend_state = BackendState {
-        child: Mutex::new(None),
-        project_dir,
-    };
-    let provider_registry =
-        ProviderRegistry::with_defaults().expect("failed to initialize Rust provider registry");
+    let provider_registry = Arc::new(
+        ProviderRegistry::with_defaults().expect("failed to initialize Rust provider registry"),
+    );
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(backend_state)
-        .manage(provider_registry)
-        .setup(|app| {
-            let state = app.state::<BackendState>();
-            let db_path = if let Ok(custom_dir) = std::env::var("UNOFFICIAL_API_DATA_DIR") {
-                PathBuf::from(custom_dir).join("unofficial_api.db")
-            } else if let Some(project_dir) = state.project_dir.as_ref() {
-                project_dir.join("data").join("unofficial_api.db")
-            } else {
-                app.path()
-                    .app_data_dir()
-                    .expect("failed to resolve app data dir")
-                    .join("unofficial_api.db")
-            };
-            let database = Database::open(&db_path).expect("failed to initialize SQLite database");
-            app.manage(database);
+        .manage(provider_registry.clone())
+        .setup(move |app| {
+            let db_path = resolve_db_path(app);
+            let data_dir = db_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
 
-            if let Err(err) = ensure_backend_started(&state) {
-                eprintln!("[unofficial-api-desktop] Backend auto-start skipped: {err}");
-            }
+            let database =
+                Arc::new(Database::open(&db_path).expect("failed to initialize SQLite database"));
+            let load_balancer = Arc::new(ProfileLoadBalancer::new());
+            let session_manager = Arc::new(VirtualSessionManager::new());
+
+            let app_state = AppState {
+                db: database.clone(),
+                registry: provider_registry.clone(),
+                load_balancer,
+                session_manager,
+            };
+
+            let server_manager = ServerManager {
+                shutdown_tx: Mutex::new(None),
+                app_state,
+                data_dir,
+            };
+
+            start_embedded_server(&server_manager);
+
+            app.manage(database);
+            app.manage(server_manager);
+
+            #[cfg(target_os = "macos")]
+            set_macos_dock_icon();
 
             let show_item =
-                MenuItem::with_id(app, "show", "Open Unofficial API", true, None::<&str>)?;
+                MenuItem::with_id(app, "show", "Open Web2AI API", true, None::<&str>)?;
             let docs_item =
                 MenuItem::with_id(app, "docs", "Open API Docs", true, None::<&str>)?;
             let restart_item =
@@ -323,18 +277,19 @@ pub fn run() {
                         }
                     }
                     "docs" => {
-                        let _ = app.opener().open_url(format!("{BACKEND_URL}/docs"), None::<&str>);
+                        let _ = app
+                            .opener()
+                            .open_url(format!("{BACKEND_URL}/docs"), None::<&str>);
                     }
                     "restart" => {
-                        let state = app.state::<BackendState>();
-                        stop_managed_backend(&state);
-                        if let Err(err) = ensure_backend_started(&state) {
-                            eprintln!("[unofficial-api-desktop] Restart failed: {err}");
-                        }
+                        let manager = app.state::<ServerManager>();
+                        stop_embedded_server(&manager);
+                        std::thread::sleep(Duration::from_millis(150));
+                        start_embedded_server(&manager);
                     }
                     "quit" => {
-                        let state = app.state::<BackendState>();
-                        stop_managed_backend(&state);
+                        let manager = app.state::<ServerManager>();
+                        stop_embedded_server(&manager);
                         app.exit(0);
                     }
                     _ => {}
@@ -357,12 +312,12 @@ pub fn run() {
             db_delete_api_key
         ])
         .build(tauri::generate_context!())
-        .expect("error while building Unofficial API desktop application");
+        .expect("error while building Web2AI API desktop application");
 
     app.run(|app_handle, event| {
         if let RunEvent::Exit = event {
-            let state = app_handle.state::<BackendState>();
-            stop_managed_backend(&state);
+            let manager = app_handle.state::<ServerManager>();
+            stop_embedded_server(&manager);
         }
     });
 }
