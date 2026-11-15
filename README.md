@@ -86,7 +86,7 @@ These share the same format across all providers.
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `model` | string | ✅ | — | Model ID (e.g. `deepseek-v3`, `deepseek-r1`, `gemini-3-flash`, `gemini-3-pro`) |
+| `model` | string | ✅ | — | Model ID (e.g. `deepseek-chat`, `deepseek-reasoner`, `gemini-3-flash`, `gemini-3-pro`) |
 | `messages` | array | ✅ | — | `[{"role": "user", "content": "..."}]` |
 | `stream` | bool | ❌ | `false` | Enable SSE streaming |
 
@@ -97,7 +97,7 @@ These share the same format across all providers.
   "id": "chatcmpl-1719000000",
   "object": "chat.completion",
   "created": 1719000000,
-  "model": "deepseek-v3",
+  "model": "deepseek-chat",
   "choices": [
     {
       "index": 0,
@@ -157,24 +157,23 @@ curl -s http://localhost:8088/v1/gemini/chat/completions \
 
 ## Multimodal Vision Support
 
-The gateway natively supports standard **OpenAI Vision format** (`image_url`) across all providers (**DeepSeek** & **Gemini**).
+The gateway natively supports standard **OpenAI Vision format** (`image_url`) across providers (**DeepSeek** & **Gemini**).
 
 Images can be supplied as:
 - **Direct HTTP/HTTPS Image URLs**
 - **Base64 Data URIs** (`data:image/png;base64,...`, `data:image/jpeg;base64,...`, `data:image/webp;base64,...`)
 
-The backend automatically parses, uploads concurrently, and injects all images into the chat completion pipeline seamlessly.
+The backend automatically parses, uploads concurrently (solving PoW challenges for DeepSeek), and injects images into the chat completion pipeline seamlessly.
 
 ### Vision Examples
 
 #### 1. Single Image Analysis (URL)
 ```bash
-# Replace [provider] with deepseek or gemini (or use /v1/chat/completions)
-curl -s http://localhost:8088/v1/[provider]/chat/completions \
+curl -s http://localhost:8088/v1/gemini/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-chat",
+    "model": "gemini-3-flash",
     "messages": [
       {
         "role": "user",

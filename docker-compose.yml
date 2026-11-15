@@ -9,16 +9,9 @@ services:
       - .env
     environment:
       - UNOFFICIAL_API_DATA_DIR=/data
-      - LIGHTPANDA_CDP_URL=ws://lightpanda:9222
+      - LIGHTPANDA_CDP_URL=ws://host.docker.internal:9222
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/data
-    depends_on:
-      - lightpanda
-    restart: unless-stopped
-
-  lightpanda:
-    image: lightpanda/browser:nightly
-    container_name: lightpanda-browser
-    ports:
-      - "127.0.0.1:9222:9222"
     restart: unless-stopped

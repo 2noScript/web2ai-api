@@ -44,7 +44,7 @@ OpenAI-compatible chat completions format:
   "id": "chatcmpl-1740000000",
   "object": "chat.completion",
   "created": 1740000000,
-  "model": "deepseek-v3",
+  "model": "deepseek-chat",
   "choices": [
     {
       "index": 0,
@@ -73,11 +73,11 @@ DeepSeek returns `reasoning_content` for R1/R4 models.
 SSE stream — each chunk is a `data:` line followed by `\n\n`. Ends with `data: [DONE]\n\n`.
 
 ```
-data: {"id":"chatcmpl-1740000000","object":"chat.completion.chunk","created":1740000000,"model":"deepseek-v3","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}
+data: {"id":"chatcmpl-1740000000","object":"chat.completion.chunk","created":1740000000,"model":"deepseek-chat","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-1740000000","object":"chat.completion.chunk","created":1740000000,"model":"deepseek-v3","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":null}]}
+data: {"id":"chatcmpl-1740000000","object":"chat.completion.chunk","created":1740000000,"model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-1740000000","object":"chat.completion.chunk","created":1740000000,"model":"deepseek-v3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+data: {"id":"chatcmpl-1740000000","object":"chat.completion.chunk","created":1740000000,"model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 ```
@@ -111,7 +111,7 @@ data: [DONE]
 curl -X POST $UNOFFICIAL_API_URL/v1/deepseek/chat/completions \
   -H "Authorization: Bearer $UNOFFICIAL_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-v3","messages":[{"role":"user","content":"Write a Python function to sort a list"}],"stream":false}'
+  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"Write a Python function to sort a list"}],"stream":false}'
 ```
 
 ### Gemini (streaming)
@@ -182,7 +182,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="deepseek-v3",
+    model="deepseek-chat",
     messages=[{"role": "user", "content": "Hello!"}],
     stream=True,
 )

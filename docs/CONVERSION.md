@@ -8,7 +8,7 @@ This document explains how each provider's native API is mapped to the OpenAI-co
 
 | OpenAI Convention | DeepSeek | Gemini |
 |---|---|---|
-| `model` field | `deepseek-v3`, `deepseek-r1` | `gemini-3-flash`, `gemini-3-pro`, `gemini-3-flash-thinking` |
+| `model` field | `deepseek-chat`, `deepseek-reasoner` | `gemini-3-flash`, `gemini-3-pro`, `gemini-3-flash-thinking` |
 
 Each provider's `/v1/{provider}/models` endpoint returns its available models.
 
@@ -22,7 +22,7 @@ OpenAI request → each provider's internal format:
 
 ```json
 {
-  "model": "deepseek-v3",
+  "model": "deepseek-chat",
   "messages": [{"role": "user", "content": "Hello!"}],
   "stream": false
 }
@@ -48,7 +48,7 @@ OpenAI request → each provider's internal format:
   "id": "chatcmpl-1719000000",
   "object": "chat.completion",
   "created": 1719000000,
-  "model": "deepseek-v3",
+  "model": "deepseek-chat",
   "choices": [{"index": 0, "message": {"role": "assistant", "content": "..."}, "finish_reason": "stop"}],
   "usage": {"prompt_tokens": 0, "completion_tokens": 42, "total_tokens": 42}
 }

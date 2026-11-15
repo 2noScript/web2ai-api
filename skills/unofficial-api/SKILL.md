@@ -46,14 +46,14 @@ Profiles are managed via `/v1/profiles` and stored in `data/profiles.json`. Chat
 ## Discover models
 
 ```bash
-curl $UNOFFICIAL_API_URL/v1/deepseek/models      # deepseek-v3, deepseek-r1
+curl $UNOFFICIAL_API_URL/v1/deepseek/models      # deepseek-chat, deepseek-reasoner
 curl $UNOFFICIAL_API_URL/v1/gemini/models        # gemini-3-flash, gemini-3-pro, ...
 ```
 
 All return OpenAI-compatible shape:
 ```json
 { "object": "list", "data": [
-  { "id": "deepseek-v3", "object": "model", "owned_by": "deepseek", "created": 1704067200 },
+  { "id": "deepseek-chat", "object": "model", "owned_by": "deepseek", "created": 1704067200 },
   { "id": "gemini-3-flash", "object": "model", "owned_by": "gemini", "created": 1704067200 }
 ]}
 ```

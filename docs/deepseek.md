@@ -29,7 +29,9 @@ DeepSeek supports the standard [common OpenAI-compatible endpoints](../README.md
 
 ### Multimodal Vision Support
 
-You can pass images in OpenAI Vision format via `image_url` (both direct URLs and Base64 Data URIs). DeepSeek automatically uploads the files with PoW solving and switches to vision recognition mode.
+DeepSeek hỗ trợ phân tích hình ảnh thông qua định dạng chuẩn **OpenAI Vision** (`image_url`):
+- Hỗ trợ cả **Direct Image URL** và **Base64 Data URI** (`data:image/png;base64,...`).
+- Gateway tự động tải ảnh, giải PoW challenge, upload lên DeepSeek file storage (`x-model-type: vision`) và gắn vào phiên chat.
 
 ### Response — Additional fields
 
@@ -58,6 +60,16 @@ curl -s http://localhost:8088/v1/deepseek/chat/completions \
   -d '{
     "model": "deepseek-reasoner",
     "messages": [{"role": "user", "content": "Solve 2+2"}]
+  }'
+
+# Streaming chat
+curl -s -N http://localhost:8088/v1/deepseek/chat/completions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-chat",
+    "messages": [{"role": "user", "content": "Count to 5"}],
+    "stream": true
   }'
 
 # Multimodal Vision analysis

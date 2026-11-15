@@ -37,7 +37,7 @@ async def chat_completions(
             "basic": {
                 "summary": "Basic chat",
                 "value": {
-                    "model": "deepseek-v3",
+                    "model": "deepseek-chat",
                     "messages": [{"role": "user", "content": "Hello!"}],
                     "stream": False,
                 },
@@ -47,11 +47,16 @@ async def chat_completions(
 ):
     messages = body.messages
     stream = body.stream
-    model = body.model or "deepseek-v3"
+    raw_model = (body.model or "deepseek-chat").strip()
+    model_aliases = {
+        "deepseek-v3": "deepseek-chat",
+        "deepseek-r1": "deepseek-reasoner",
+    }
+    model = model_aliases.get(raw_model.lower(), raw_model.lower())
 
-    if model.lower() not in DEEPSEEK_MODEL_CONFIG:
+    if model not in DEEPSEEK_MODEL_CONFIG:
         return JSONResponse(
-            {"error": {"message": f"Model '{model}' not supported. Supported: {list(DEEPSEEK_MODEL_CONFIG)}", "type": "invalid_request_error", "code": "model_not_found"}},
+            {"error": {"message": f"Model '{raw_model}' not supported. Supported: {list(DEEPSEEK_MODEL_CONFIG)}", "type": "invalid_request_error", "code": "model_not_found"}},
             status_code=400,
         )
 

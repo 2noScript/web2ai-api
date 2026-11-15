@@ -1116,8 +1116,7 @@ export function App() {
                     {testModalProfile.type === "deepseek" ? (
                       <>
                         <option value="deepseek-chat">deepseek-chat (Default)</option>
-                        <option value="deepseek-v3">deepseek-v3</option>
-                        <option value="deepseek-r1">deepseek-r1</option>
+                        <option value="deepseek-reasoner">deepseek-reasoner</option>
                       </>
                     ) : testModalProfile.type === "metaai" ? (
                       <>

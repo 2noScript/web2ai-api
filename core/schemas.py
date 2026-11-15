@@ -17,8 +17,8 @@ class ChatCompletionRequest(BaseModel):
         ...,
         description="Model ID to use",
         examples=[
-            "deepseek-v3",
-            "deepseek-r1",
+            "deepseek-chat",
+            "deepseek-reasoner",
             "gemini-3-flash",
             "gemini-3-pro",
         ],
