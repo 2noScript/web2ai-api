@@ -1,9 +1,17 @@
+pub mod db;
+pub mod http_client;
+pub mod openai;
+pub mod providers;
+
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use db::{ApiKey, CreateProfileInput, Database, Profile, UpdateProfileInput};
+use openai::{ChatCompletionRequest, ChatCompletionResponse, ModelList};
+use providers::{ProviderCredentials, ProviderRegistry};
 use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -193,6 +201,72 @@ fn restart_backend(state: tauri::State<'_, BackendState>) -> Result<BackendStatu
     Ok(get_backend_status(state))
 }
 
+#[tauri::command]
+fn list_provider_models(
+    registry: tauri::State<'_, ProviderRegistry>,
+    provider_id: Option<String>,
+) -> ModelList {
+    registry.list_models(provider_id.as_deref())
+}
+
+#[tauri::command]
+async fn provider_chat_completions(
+    registry: tauri::State<'_, ProviderRegistry>,
+    provider_id: String,
+    credentials: ProviderCredentials,
+    request: ChatCompletionRequest,
+) -> Result<ChatCompletionResponse, String> {
+    let provider = registry
+        .get(&provider_id)
+        .ok_or_else(|| format!("unknown provider `{provider_id}`"))?;
+    provider
+        .chat_completions(&credentials, &request)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_list_profiles(db: tauri::State<'_, Database>) -> Result<Vec<Profile>, String> {
+    db.list_profiles().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_create_profile(
+    db: tauri::State<'_, Database>,
+    input: CreateProfileInput,
+) -> Result<Profile, String> {
+    db.create_profile(input).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_update_profile(
+    db: tauri::State<'_, Database>,
+    id: String,
+    input: UpdateProfileInput,
+) -> Result<Profile, String> {
+    db.update_profile(&id, input).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_delete_profile(db: tauri::State<'_, Database>, id: String) -> Result<usize, String> {
+    db.delete_profile(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_list_api_keys(db: tauri::State<'_, Database>) -> Result<Vec<ApiKey>, String> {
+    db.list_api_keys().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_create_api_key(db: tauri::State<'_, Database>, name: String) -> Result<ApiKey, String> {
+    db.create_api_key(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_delete_api_key(db: tauri::State<'_, Database>, key: String) -> Result<usize, String> {
+    db.delete_api_key(&key).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let project_dir = resolve_project_dir();
@@ -200,12 +274,28 @@ pub fn run() {
         child: Mutex::new(None),
         project_dir,
     };
+    let provider_registry =
+        ProviderRegistry::with_defaults().expect("failed to initialize Rust provider registry");
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(backend_state)
+        .manage(provider_registry)
         .setup(|app| {
             let state = app.state::<BackendState>();
+            let db_path = if let Ok(custom_dir) = std::env::var("UNOFFICIAL_API_DATA_DIR") {
+                PathBuf::from(custom_dir).join("unofficial_api.db")
+            } else if let Some(project_dir) = state.project_dir.as_ref() {
+                project_dir.join("data").join("unofficial_api.db")
+            } else {
+                app.path()
+                    .app_data_dir()
+                    .expect("failed to resolve app data dir")
+                    .join("unofficial_api.db")
+            };
+            let database = Database::open(&db_path).expect("failed to initialize SQLite database");
+            app.manage(database);
+
             if let Err(err) = ensure_backend_started(&state) {
                 eprintln!("[unofficial-api-desktop] Backend auto-start skipped: {err}");
             }
@@ -255,7 +345,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_backend_status,
-            restart_backend
+            restart_backend,
+            list_provider_models,
+            provider_chat_completions,
+            db_list_profiles,
+            db_create_profile,
+            db_update_profile,
+            db_delete_profile,
+            db_list_api_keys,
+            db_create_api_key,
+            db_delete_api_key
         ])
         .build(tauri::generate_context!())
         .expect("error while building Unofficial API desktop application");
