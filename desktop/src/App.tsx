@@ -96,6 +96,12 @@ const PROVIDER_LABELS: Record<ProviderType, string> = {
   metaai: "Meta AI",
 };
 
+const PROVIDER_LOGOS: Record<ProviderType, string> = {
+  deepseek: "/providers/deepseek.svg",
+  gemini: "/providers/gemini.svg",
+  metaai: "/providers/metaai.svg",
+};
+
 function maskSecret(val?: string | null): string {
   if (!val) return "—";
   if (val.length <= 14) return "••••••••";
@@ -112,6 +118,29 @@ export default function App() {
   const [previewPetStatus, setPreviewPetStatus] = useState<PetStatus>("idle");
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [serverToggling, setServerToggling] = useState(false);
+
+  const handleToggleServer = async () => {
+    setServerToggling(true);
+    try {
+      const isOnline = health?.status === "ok";
+      const status = await invoke<{ running: boolean }>(
+        isOnline ? "stop_backend" : "start_backend",
+      );
+      if (status.running) {
+        const res = await fetch(apiUrl("/health"));
+        if (res.ok) {
+          setHealth((await res.json()) as HealthStatus);
+        }
+      } else {
+        setHealth(null);
+      }
+    } catch {
+      // Ignore outside Tauri
+    } finally {
+      setServerToggling(false);
+    }
+  };
 
   const handleCheckUpdate = async () => {
     setCheckingUpdate(true);
@@ -603,18 +632,27 @@ export default function App() {
                 <Activity className="h-3.5 w-3.5 text-primary" />
                 Gateway
               </span>
-              <span
-                className={`inline-flex items-center gap-1 text-[11px] font-medium ${
-                  health?.status === "ok" ? "text-primary" : "text-muted-foreground"
-                }`}
-              >
+              <div className="flex items-center gap-2">
                 <span
-                  className={`h-1.5 w-1.5 rounded-full ${
-                    health?.status === "ok" ? "bg-primary" : "bg-muted-foreground"
+                  className={`inline-flex items-center gap-1 text-[11px] font-medium ${
+                    health?.status === "ok" ? "text-primary" : "text-muted-foreground"
                   }`}
+                >
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      health?.status === "ok" ? "bg-primary" : "bg-muted-foreground"
+                    }`}
+                  />
+                  {health?.status === "ok" ? "Online" : "Offline"}
+                </span>
+                <Switch
+                  size="sm"
+                  checked={health?.status === "ok"}
+                  disabled={serverToggling}
+                  onCheckedChange={() => void handleToggleServer()}
+                  title={health?.status === "ok" ? "Stop Server (:8088)" : "Start Server (:8088)"}
                 />
-                {health?.status === "ok" ? "Online" : "Offline"}
-              </span>
+              </div>
             </div>
             <div className="space-y-1 text-[11px] text-muted-foreground">
               <div className="flex justify-between">
@@ -676,12 +714,19 @@ export default function App() {
                     key={tab}
                     type="button"
                     onClick={() => setProviderFilter(tab)}
-                    className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                    className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                       providerFilter === tab
                         ? "bg-primary text-primary-foreground"
                         : "bg-secondary text-secondary-foreground hover:bg-accent"
                     }`}
                   >
+                    {tab !== "all" && (
+                      <img
+                        src={PROVIDER_LOGOS[tab]}
+                        alt={PROVIDER_LABELS[tab]}
+                        className="h-3.5 w-3.5 shrink-0"
+                      />
+                    )}
                     {tab === "all" ? "All" : PROVIDER_LABELS[tab]}
                   </button>
                 ))}
@@ -712,7 +757,14 @@ export default function App() {
                           <TableRow key={p.id}>
                             <TableCell className="font-medium text-xs">{p.name}</TableCell>
                             <TableCell>
-                              <Badge variant="outline" className="text-[11px]">
+                              <Badge variant="outline" className="gap-1.5 text-[11px]">
+                                {PROVIDER_LOGOS[p.type] && (
+                                  <img
+                                    src={PROVIDER_LOGOS[p.type]}
+                                    alt={PROVIDER_LABELS[p.type] ?? p.type}
+                                    className="h-3.5 w-3.5 shrink-0"
+                                  />
+                                )}
                                 {PROVIDER_LABELS[p.type] ?? p.type}
                               </Badge>
                             </TableCell>
@@ -722,6 +774,7 @@ export default function App() {
                             <TableCell className="font-mono text-xs">{p.total_requests}</TableCell>
                             <TableCell>
                               <Switch
+                                size="sm"
                                 checked={p.is_active}
                                 onCheckedChange={() => void handleToggleActive(p)}
                               />

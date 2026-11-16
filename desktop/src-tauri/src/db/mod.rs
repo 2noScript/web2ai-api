@@ -676,6 +676,7 @@ impl Database {
     }
 
     pub fn get_pet_state(&self) -> Result<PetState, DbError> {
+        let pet_api_key = self.ensure_pet_api_key()?;
         let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
         let selected_pet_id = system_settings::table
             .find("pet_selected_id")
@@ -712,10 +713,22 @@ impl Database {
 
         Ok(PetState {
             selected_pet_id,
+            pet_api_key,
             active_session_id,
             sessions,
             messages,
         })
+    }
+
+    pub fn ensure_pet_api_key(&self) -> Result<String, DbError> {
+        if let Some(existing) = self.get_setting("pet_api_key")? {
+            if self.validate_api_key(&existing).unwrap_or(false) {
+                return Ok(existing);
+            }
+        }
+        let created = self.create_api_key("Desktop Pet (Built-in)")?;
+        self.set_setting("pet_api_key", &created.key)?;
+        Ok(created.key)
     }
 
     pub fn set_selected_pet(&self, pet_id: &str) -> Result<(), DbError> {
@@ -788,13 +801,13 @@ impl Database {
         let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
         let now = Utc::now().to_rfc3339();
 
-        let exists = pet_sessions::table
+        let existing_title = pet_sessions::table
             .find(session_id)
-            .select(pet_sessions::session_id)
+            .select(pet_sessions::title)
             .first::<String>(&mut *conn)
             .optional()?;
 
-        if exists.is_none() {
+        if existing_title.is_none() {
             let trimmed = title_if_new.trim();
             let title: String = if trimmed.is_empty() {
                 "New Pet Chat".to_string()
@@ -811,12 +824,30 @@ impl Database {
                 })
                 .execute(&mut *conn)?;
         } else {
-            diesel::update(pet_sessions::table.find(session_id))
-                .set((
-                    pet_sessions::updated_at.eq(&now),
-                    pet_sessions::model.eq(model),
-                ))
-                .execute(&mut *conn)?;
+            let current_title = existing_title.unwrap_or_default();
+            let trimmed = title_if_new.trim();
+            let should_auto_title = role == "user"
+                && (current_title == "New chat" || current_title == "New Pet Chat")
+                && !trimmed.is_empty()
+                && trimmed != "New chat"
+                && trimmed != "New Pet Chat";
+            if should_auto_title {
+                let next_title: String = trimmed.chars().take(48).collect();
+                diesel::update(pet_sessions::table.find(session_id))
+                    .set((
+                        pet_sessions::title.eq(&next_title),
+                        pet_sessions::updated_at.eq(&now),
+                        pet_sessions::model.eq(model),
+                    ))
+                    .execute(&mut *conn)?;
+            } else {
+                diesel::update(pet_sessions::table.find(session_id))
+                    .set((
+                        pet_sessions::updated_at.eq(&now),
+                        pet_sessions::model.eq(model),
+                    ))
+                    .execute(&mut *conn)?;
+            }
         }
 
         diesel::insert_into(pet_messages::table)
@@ -879,6 +910,22 @@ impl Database {
         }
         Ok(deleted > 0)
     }
+
+    pub fn rename_pet_session(&self, session_id: &str, title: &str) -> Result<bool, DbError> {
+        let trimmed: String = title.trim().chars().take(64).collect();
+        if trimmed.is_empty() {
+            return Ok(false);
+        }
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        let now = Utc::now().to_rfc3339();
+        let updated = diesel::update(pet_sessions::table.find(session_id))
+            .set((
+                pet_sessions::title.eq(&trimmed),
+                pet_sessions::updated_at.eq(&now),
+            ))
+            .execute(&mut *conn)?;
+        Ok(updated > 0)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Queryable, Selectable)]
@@ -923,6 +970,7 @@ struct NewPetMessageRow<'a> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PetState {
     pub selected_pet_id: String,
+    pub pet_api_key: String,
     pub active_session_id: Option<String>,
     pub sessions: Vec<PetSession>,
     pub messages: Vec<PetMessage>,

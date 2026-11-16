@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -11,7 +12,7 @@ use wreq::{
     header::{HeaderMap, HeaderValue},
     multipart, Client,
 };
-
+    
 use crate::http_client::build_browser_client;
 use crate::openai::{ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ModelObject};
 use crate::providers::{Provider, ProviderCredentials, ProviderError, ProviderStream, StreamEvent};
@@ -19,6 +20,18 @@ use crate::session::ImageAttachment;
 
 const DEEPSEEK_BASE_URL: &str = "https://chat.deepseek.com";
 const DEEPSEEK_POW_WASM: &[u8] = include_bytes!("pow.wasm");
+static POW_RUNTIME: OnceLock<Result<(wasmtime::Engine, wasmtime::Module), String>> =
+    OnceLock::new();
+
+fn pow_runtime() -> Result<&'static (wasmtime::Engine, wasmtime::Module), ProviderError> {
+    let entry = POW_RUNTIME.get_or_init(|| {
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::from_binary(&engine, DEEPSEEK_POW_WASM)
+            .map_err(|e| format!("wasm module load error: {e}"))?;
+        Ok((engine, module))
+    });
+    entry.as_ref().map_err(|e| ProviderError::Other(e.clone()))
+}
 
 pub struct DeepSeekProvider {
     client: Client,
@@ -194,7 +207,7 @@ impl DeepSeekProvider {
             let challenge = self
                 .create_pow_challenge(token, chat_session_id, "/api/v0/file/upload_file")
                 .await?;
-            let pow_response = Self::solve_pow_challenge(&challenge)?;
+            let pow_response = Self::solve_pow_challenge_async(challenge).await?;
 
             let url = format!("{DEEPSEEK_BASE_URL}/api/v0/file/upload_file");
             let referer = format!("{DEEPSEEK_BASE_URL}/a/chat/s/{chat_session_id}");
@@ -241,31 +254,31 @@ impl DeepSeekProvider {
         Ok(file_ids)
     }
 
-    fn solve_pow_challenge(challenge: &PowChallenge) -> Result<String, ProviderError> {
-        use wasmi::{Engine, Linker, Module, Store};
+    async fn solve_pow_challenge_async(challenge: PowChallenge) -> Result<String, ProviderError> {
+        tokio::task::spawn_blocking(move || Self::solve_pow_challenge(&challenge))
+            .await
+            .map_err(|e| ProviderError::Other(format!("pow task join error: {e}")))?
+    }
 
-        let engine = Engine::default();
-        let module = Module::new(&engine, DEEPSEEK_POW_WASM)
-            .map_err(|e| ProviderError::Other(format!("wasm module load error: {e}")))?;
-        let mut store = Store::new(&engine, ());
-        let linker = Linker::new(&engine);
-        let instance = linker
-            .instantiate(&mut store, &module)
-            .map_err(|e| ProviderError::Other(format!("wasm instantiate error: {e}")))?
-            .start(&mut store)
-            .map_err(|e| ProviderError::Other(format!("wasm start error: {e}")))?;
+    fn solve_pow_challenge(challenge: &PowChallenge) -> Result<String, ProviderError> {
+        use wasmtime::{Instance, Store};
+
+        let (engine, module) = pow_runtime()?;
+        let mut store = Store::new(engine, ());
+        let instance = Instance::new(&mut store, module, &[])
+            .map_err(|e| ProviderError::Other(format!("wasm instantiate error: {e}")))?;
 
         let memory = instance
-            .get_memory(&store, "memory")
+            .get_memory(&mut store, "memory")
             .ok_or_else(|| ProviderError::Other("wasm missing `memory` export".to_string()))?;
         let alloc = instance
-            .get_typed_func::<(i32, i32), i32>(&store, "__wbindgen_export_0")
+            .get_typed_func::<(i32, i32), i32>(&mut store, "__wbindgen_export_0")
             .map_err(|e| ProviderError::Other(format!("wasm missing alloc: {e}")))?;
         let add_stack_ptr = instance
-            .get_typed_func::<i32, i32>(&store, "__wbindgen_add_to_stack_pointer")
+            .get_typed_func::<i32, i32>(&mut store, "__wbindgen_add_to_stack_pointer")
             .map_err(|e| ProviderError::Other(format!("wasm missing stack_ptr: {e}")))?;
         let wasm_solve = instance
-            .get_typed_func::<(i32, i32, i32, i32, i32, f64), ()>(&store, "wasm_solve")
+            .get_typed_func::<(i32, i32, i32, i32, i32, f64), ()>(&mut store, "wasm_solve")
             .map_err(|e| ProviderError::Other(format!("wasm missing wasm_solve: {e}")))?;
 
         let expire_str = match &challenge.expire_at {
@@ -651,7 +664,7 @@ impl Provider for DeepSeekProvider {
                 }
             };
 
-            let pow_response = Self::solve_pow_challenge(&challenge)?;
+            let pow_response = Self::solve_pow_challenge_async(challenge).await?;
 
             let url = format!("{DEEPSEEK_BASE_URL}/api/v0/chat/completion");
             let referer = format!("{DEEPSEEK_BASE_URL}/a/chat/s/{chat_session_id}");
@@ -784,7 +797,7 @@ impl Provider for DeepSeekProvider {
         let challenge = self
             .create_pow_challenge(&token, &chat_session_id, "/api/v0/chat/completion")
             .await?;
-        let pow_response = Self::solve_pow_challenge(&challenge)?;
+        let pow_response = Self::solve_pow_challenge_async(challenge).await?;
 
         let url = format!("{DEEPSEEK_BASE_URL}/api/v0/chat/completion");
         let referer = format!("{DEEPSEEK_BASE_URL}/a/chat/s/{chat_session_id}");

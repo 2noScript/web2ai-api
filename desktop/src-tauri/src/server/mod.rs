@@ -51,6 +51,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(docs_handler))
         .route("/docs", get(docs_handler))
+        .route("/openapi.json", get(openapi_handler))
         .route("/health", get(health_handler))
         .route("/v1/profiles", get(list_profiles_handler).post(create_profile_handler))
         .route(
@@ -69,7 +70,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/pet/sessions", post(create_pet_session_handler))
         .route(
             "/v1/pet/sessions/{session_id}",
-            put(select_pet_session_handler).delete(delete_pet_session_handler),
+            put(select_pet_session_handler)
+                .patch(rename_pet_session_handler)
+                .delete(delete_pet_session_handler),
         )
         .route("/v1/pet/messages", post(append_pet_message_handler))
         .layer(CorsLayer::permissive())
@@ -97,21 +100,330 @@ pub async fn run_http_server(
 async fn docs_handler() -> Html<&'static str> {
     Html(
         r#"<!doctype html>
-<html>
-<head><meta charset="utf-8"><title>Web2AI API</title></head>
-<body style="font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px;">
-  <h1>Web2AI API Gateway</h1>
-  <p>OpenAI-compatible base URL: <code>http://127.0.0.1:8088/v1</code></p>
-  <ul>
-    <li><code>GET /health</code></li>
-    <li><code>GET /v1/models</code> (returns <code>provider:model</code> IDs)</li>
-    <li><code>POST /v1/chat/completions</code> (<code>model: "deepseek:deepseek-chat"</code>, <code>"gemini:gemini-3-flash"</code>, <code>"metaai:..."</code>)</li>
-    <li><code>GET / POST /v1/profiles</code> &middot; <code>PUT / DELETE /v1/profiles/{id}</code></li>
-    <li><code>GET / POST /v1/keys</code> &middot; <code>POST /v1/keys/revoke</code> &middot; <code>DELETE /v1/keys/{key}</code></li>
-  </ul>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Web2AI API — Swagger UI</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+  <style>
+    body { margin: 0; background: #fafafa; }
+    .swagger-ui .topbar { background-color: #181818; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: '/openapi.json',
+      dom_id: '#swagger-ui',
+      deepLinking: true,
+      presets: [SwaggerUIBundle.presets.apis],
+      layout: 'BaseLayout'
+    });
+  </script>
 </body>
 </html>"#,
     )
+}
+
+async fn openapi_handler() -> impl IntoResponse {
+    Json(json!({
+        "openapi": "3.0.3",
+        "info": {
+            "title": "Web2AI API Gateway",
+            "version": "0.1.0",
+            "description": "OpenAI-compatible local AI gateway backed by Rust Axum + Diesel SQLite."
+        },
+        "servers": [
+            { "url": "http://127.0.0.1:8088", "description": "Local Gateway" }
+        ],
+        "components": {
+            "securitySchemes": {
+                "BearerAuth": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "description": "Optional local API key created via /v1/keys"
+                }
+            },
+            "schemas": {
+                "ChatMessage": {
+                    "type": "object",
+                    "required": ["role", "content"],
+                    "properties": {
+                        "role": { "type": "string", "enum": ["system", "user", "assistant"] },
+                        "content": { "type": "string" }
+                    }
+                },
+                "ChatCompletionRequest": {
+                    "type": "object",
+                    "required": ["model", "messages"],
+                    "properties": {
+                        "model": { "type": "string", "example": "deepseek:deepseek-chat" },
+                        "messages": {
+                            "type": "array",
+                            "items": { "$ref": "#/components/schemas/ChatMessage" }
+                        },
+                        "stream": { "type": "boolean", "default": false }
+                    }
+                },
+                "CreateProfileInput": {
+                    "type": "object",
+                    "required": ["type", "name"],
+                    "properties": {
+                        "type": { "type": "string", "enum": ["deepseek", "gemini", "metaai"] },
+                        "name": { "type": "string", "example": "DeepSeek Main" },
+                        "token": { "type": "string" },
+                        "cookie": { "type": "string" },
+                        "is_active": { "type": "boolean", "default": true }
+                    }
+                }
+            }
+        },
+        "paths": {
+            "/health": {
+                "get": {
+                    "tags": ["System"],
+                    "summary": "Gateway health & active profile counts",
+                    "responses": { "200": { "description": "OK" } }
+                }
+            },
+            "/v1/models": {
+                "get": {
+                    "tags": ["OpenAI"],
+                    "summary": "List available provider:model IDs",
+                    "responses": { "200": { "description": "Model list" } }
+                }
+            },
+            "/v1/chat/completions": {
+                "post": {
+                    "tags": ["OpenAI"],
+                    "summary": "Create chat completion (supports SSE streaming & X-Session-Id)",
+                    "security": [{ "BearerAuth": [] }],
+                    "parameters": [
+                        {
+                            "name": "X-Session-Id",
+                            "in": "header",
+                            "required": false,
+                            "schema": { "type": "string" }
+                        }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/ChatCompletionRequest" }
+                            }
+                        }
+                    },
+                    "responses": { "200": { "description": "Chat completion or SSE stream" } }
+                }
+            },
+            "/v1/profiles": {
+                "get": {
+                    "tags": ["Profiles"],
+                    "summary": "List provider profiles",
+                    "parameters": [
+                        { "name": "type", "in": "query", "required": false, "schema": { "type": "string" } }
+                    ],
+                    "responses": { "200": { "description": "Profiles list" } }
+                },
+                "post": {
+                    "tags": ["Profiles"],
+                    "summary": "Create provider profile",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/CreateProfileInput" }
+                            }
+                        }
+                    },
+                    "responses": { "201": { "description": "Created" } }
+                }
+            },
+            "/v1/profiles/{id}": {
+                "get": {
+                    "tags": ["Profiles"],
+                    "summary": "Get profile by ID",
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "200": { "description": "Profile" } }
+                },
+                "put": {
+                    "tags": ["Profiles"],
+                    "summary": "Update profile",
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": { "type": "string" },
+                                        "token": { "type": "string" },
+                                        "cookie": { "type": "string" },
+                                        "is_active": { "type": "boolean" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": { "200": { "description": "Updated" } }
+                },
+                "delete": {
+                    "tags": ["Profiles"],
+                    "summary": "Delete profile",
+                    "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "200": { "description": "Deleted" } }
+                }
+            },
+            "/v1/keys": {
+                "get": { "tags": ["API Keys"], "summary": "List local API keys", "responses": { "200": { "description": "Keys" } } },
+                "post": {
+                    "tags": ["API Keys"],
+                    "summary": "Create local API key",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["name"],
+                                    "properties": {
+                                        "name": { "type": "string", "example": "Cursor IDE" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": { "201": { "description": "Created" } }
+                }
+            },
+            "/v1/keys/revoke": {
+                "post": {
+                    "tags": ["API Keys"],
+                    "summary": "Revoke local API key",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["key"],
+                                    "properties": {
+                                        "key": { "type": "string", "example": "sk-..." }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": { "200": { "description": "Revoked" } }
+                }
+            },
+            "/v1/keys/{key}": {
+                "delete": {
+                    "tags": ["API Keys"],
+                    "summary": "Delete local API key",
+                    "parameters": [{ "name": "key", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "200": { "description": "Deleted" } }
+                }
+            },
+            "/v1/pet/state": {
+                "get": { "tags": ["Pet"], "summary": "Get persisted pet selection & chat history", "responses": { "200": { "description": "Pet state" } } }
+            },
+            "/v1/pet/selected": {
+                "put": {
+                    "tags": ["Pet"],
+                    "summary": "Save selected pet ID in SQLite",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["pet_id"],
+                                    "properties": {
+                                        "pet_id": { "type": "string", "enum": ["fox", "bot", "cat", "owl", "shiba"] }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": { "200": { "description": "Saved" } }
+                }
+            },
+            "/v1/pet/sessions": {
+                "post": {
+                    "tags": ["Pet"],
+                    "summary": "Create or activate a pet chat session",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["session_id"],
+                                    "properties": {
+                                        "session_id": { "type": "string" },
+                                        "title": { "type": "string" },
+                                        "model": { "type": "string", "example": "deepseek:deepseek-chat" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": { "200": { "description": "PetSession" } }
+                }
+            },
+            "/v1/pet/sessions/{session_id}": {
+                "put": {
+                    "tags": ["Pet"],
+                    "summary": "Switch active pet session and load its messages",
+                    "parameters": [{ "name": "session_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "200": { "description": "Session messages" } }
+                },
+                "patch": {
+                    "tags": ["Pet"],
+                    "summary": "Rename pet chat session",
+                    "parameters": [{ "name": "session_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "200": { "description": "Updated" } }
+                },
+                "delete": {
+                    "tags": ["Pet"],
+                    "summary": "Delete pet chat session",
+                    "parameters": [{ "name": "session_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "200": { "description": "Deleted" } }
+                }
+            },
+            "/v1/pet/messages": {
+                "post": {
+                    "tags": ["Pet"],
+                    "summary": "Append a message to a pet chat session in SQLite",
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["session_id", "role", "content"],
+                                    "properties": {
+                                        "session_id": { "type": "string" },
+                                        "title": { "type": "string" },
+                                        "model": { "type": "string" },
+                                        "role": { "type": "string", "enum": ["user", "assistant"] },
+                                        "content": { "type": "string" }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": { "200": { "description": "PetMessage" } }
+                }
+            }
+        }
+    }))
 }
 
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -604,6 +916,26 @@ async fn select_pet_session_handler(
             Json(serde_json::json!({ "session_id": session_id, "messages": messages }))
                 .into_response()
         }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "detail": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RenamePetSessionRequest {
+    title: String,
+}
+
+async fn rename_pet_session_handler(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Json(body): Json<RenamePetSessionRequest>,
+) -> Response {
+    match state.db.rename_pet_session(&session_id, &body.title) {
+        Ok(updated) => Json(serde_json::json!({ "updated": updated })).into_response(),
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "detail": err.to_string() })),

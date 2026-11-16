@@ -68,16 +68,19 @@ export default function HomePage() {
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       {/* Top Navbar */}
       <header className="sticky top-0 z-40 border-b border-border bg-muted/85 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
-          <a href="#" className="flex items-center gap-2.5">
-            <Image
-              src={`${BASE_PATH}/logo.png`}
-              alt="Web2AI API"
-              width={28}
-              height={28}
-              className="size-7 rounded-md object-contain"
-            />
-            <span className="text-sm font-semibold tracking-tight">Web2AI API</span>
+        <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-6">
+          <a href="#" className="flex items-center gap-3">
+            <div className="flex size-10 items-center justify-center rounded-xl border border-border bg-card p-1 shadow-sm">
+              <Image
+                src={`${BASE_PATH}/logo.png`}
+                alt="Web2AI API"
+                width={36}
+                height={36}
+                priority
+                className="size-8 rounded-lg object-contain"
+              />
+            </div>
+            <span className="text-base font-semibold tracking-tight">Web2AI API</span>
           </a>
           <nav className="flex items-center gap-5 text-xs text-muted-foreground">
             <a href="#features" className="transition-colors hover:text-foreground">
@@ -105,21 +108,36 @@ export default function HomePage() {
       <main className="flex-1">
         {/* Hero Section */}
         <section className="mx-auto max-w-5xl px-6 pt-16 pb-14">
-          <div className="flex flex-col items-start gap-6">
-            <Badge className="gap-1.5">
-              <Cpu className="h-3 w-3" />
-              Rust + Tauri v2 · Open Source
-            </Badge>
-            <h1 className="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">
-              Turn DeepSeek into an{" "}
-              <span className="text-primary">OpenAI-Compatible</span> Local Gateway
-            </h1>
-            <p className="max-w-2xl text-base leading-relaxed text-muted-foreground">
-              Web2AI API Desktop bundles an embedded Rust Axum server, Diesel SQLite persistence,
-              multi-profile load balancing, and a floating Codex-style Desktop Pet in a single
-              native app.
-            </p>
-            <HeroDownloadAction />
+          <div className="flex flex-col-reverse items-start justify-between gap-8 md:flex-row md:items-center md:gap-12">
+            <div className="flex flex-col items-start gap-6">
+              <Badge className="gap-1.5">
+                <Cpu className="h-3 w-3" />
+                Rust + Tauri v2 · Open Source
+              </Badge>
+              <h1 className="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">
+                Turn DeepSeek into an{" "}
+                <span className="text-primary">OpenAI-Compatible</span> Local Gateway
+              </h1>
+              <p className="max-w-2xl text-base leading-relaxed text-muted-foreground">
+                Web2AI API Desktop bundles an embedded Rust Axum server, Diesel SQLite persistence,
+                multi-profile load balancing, and a floating Codex-style Desktop Pet in a single
+                native app.
+              </p>
+              <HeroDownloadAction />
+            </div>
+
+            <div className="shrink-0">
+              <div className="relative flex size-28 items-center justify-center rounded-3xl border border-primary/35 bg-card/90 p-3 shadow-[0_0_50px_-12px_rgba(54,181,186,0.45)] sm:size-36 sm:p-4">
+                <Image
+                  src={`${BASE_PATH}/logo.png`}
+                  alt="Web2AI API App Logo"
+                  width={128}
+                  height={128}
+                  priority
+                  className="size-full object-contain drop-shadow-[0_4px_16px_rgba(54,181,186,0.28)]"
+                />
+              </div>
+            </div>
           </div>
 
           {/* Code & Pet Preview Card */}

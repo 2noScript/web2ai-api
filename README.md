@@ -20,6 +20,19 @@ bun run dev
 
 ---
 
+## Floating Desktop Pet
+
+Web2AI API Desktop includes an always-on-top **Floating Desktop Pet** that lets you chat with your local models right from your desktop.
+
+![Web2AI Floating Desktop Pet](docs/images/desktop-pet.jpg)
+
+- **5 Pixel-Art Companions (Pet Store)**: **Cyber Fox** (Electric Guitar), **Terminal Bot** (Cyber Mic), **Pixel Neko** (Bamboo Flute), **Night Owl** (Star Wand), and **Shiba Dev** (Taiko Drum).
+- **Expressive Reactions**: Reacts live while you type, wait for replies, or stream responses — and responds with playful moods when you click on the pet.
+- **Quick Chat**: Click the toolbar or status bar below the pet to expand quick chat, switch between recent threads, or start a new conversation.
+- **Easy Controls**: Use **Bring Pet Here** in **Pet Store** or the system tray menu (**Show/Hide Pet**) to find or toggle your pet anytime.
+
+---
+
 ## API Reference
 
 Base URL: `http://127.0.0.1:8088`

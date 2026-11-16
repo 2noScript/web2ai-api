@@ -125,6 +125,21 @@ fn restart_backend(manager: tauri::State<'_, ServerManager>) -> Result<BackendSt
     stop_embedded_server(&manager);
     std::thread::sleep(Duration::from_millis(150));
     start_embedded_server(&manager);
+    std::thread::sleep(Duration::from_millis(150));
+    Ok(get_backend_status(manager))
+}
+
+#[tauri::command]
+fn start_backend(manager: tauri::State<'_, ServerManager>) -> Result<BackendStatus, String> {
+    start_embedded_server(&manager);
+    std::thread::sleep(Duration::from_millis(150));
+    Ok(get_backend_status(manager))
+}
+
+#[tauri::command]
+fn stop_backend(manager: tauri::State<'_, ServerManager>) -> Result<BackendStatus, String> {
+    stop_embedded_server(&manager);
+    std::thread::sleep(Duration::from_millis(150));
     Ok(get_backend_status(manager))
 }
 
@@ -303,54 +318,6 @@ pub fn run() {
             app.manage(database);
             app.manage(server_manager);
 
-            #[tauri::command]
-fn toggle_pet_window(app: tauri::AppHandle) -> bool {
-    if let Some(win) = app.get_webview_window("pet") {
-        let visible = win.is_visible().unwrap_or(false);
-        if visible {
-            let _ = win.hide();
-            return false;
-        }
-        let _ = win.show();
-        let _ = win.set_focus();
-        return true;
-    }
-    false
-}
-
-#[tauri::command]
-fn open_main_window(app: tauri::AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.show();
-        let _ = win.set_focus();
-    }
-}
-
-#[tauri::command]
-fn summon_pet_window(app: tauri::AppHandle) -> bool {
-    let Some(pet) = app.get_webview_window("pet") else {
-        return false;
-    };
-    if let Some(main) = app.get_webview_window("main") {
-        if let (Ok(pos), Ok(size), Ok(pet_size)) = (
-            main.outer_position(),
-            main.outer_size(),
-            pet.outer_size(),
-        ) {
-            let target_x = pos.x + size.width as i32 - pet_size.width as i32 - 24;
-            let target_y = pos.y + size.height as i32 - pet_size.height as i32 - 24;
-            let _ = pet.set_position(tauri::PhysicalPosition::new(
-                target_x.max(0),
-                target_y.max(0),
-            ));
-        }
-    }
-    let _ = pet.show();
-    let _ = pet.set_focus();
-    let _ = app.emit("pet:status", serde_json::json!({ "status": "done" }));
-    true
-}
-
 #[cfg(target_os = "macos")]
             set_macos_dock_icon();
 
@@ -405,6 +372,8 @@ fn summon_pet_window(app: tauri::AppHandle) -> bool {
         .invoke_handler(tauri::generate_handler![
             get_backend_status,
             restart_backend,
+            start_backend,
+            stop_backend,
             list_provider_models,
             provider_chat_completions,
             db_list_profiles,

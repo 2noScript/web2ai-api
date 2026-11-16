@@ -1,6 +1,6 @@
 [package]
 name = "web2ai-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "Web2AI API Desktop Application"
 authors = ["Web2AI"]
 edition = "2021"
@@ -32,7 +32,7 @@ async-trait = "0.1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
-wasmi = "0.40"
+wasmtime = { version = "29", default-features = false, features = ["cranelift", "runtime"] }
 wreq = { version = "6.0.0-rc.31", features = ["json", "cookies", "stream", "gzip", "brotli", "deflate", "multipart", "ws"] }
 wreq-util = "3.0.0-rc.14"
 axum = "0.8"
