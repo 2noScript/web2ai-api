@@ -28,6 +28,10 @@ bun run dev
 
 ---
 
+## See It in Action
+
+![Floating Pet Chat Preview](docs/images/chat-demo.gif)
+
 ## Desktop Gateway & API Playground
 
 | Provider Profiles | API Playground |
