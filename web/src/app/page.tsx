@@ -36,7 +36,7 @@ const FEATURES = [
     icon: RefreshCw,
     title: "Round-Robin Profile Load Balancing",
     description:
-      "Register multiple DeepSeek tokens and rotate requests automatically with cooldown handling on auth or rate-limit errors.",
+      "Register multiple provider accounts and rotate requests automatically with cooldown handling on auth or rate-limit errors.",
   },
   {
     icon: Sparkles,
@@ -116,8 +116,8 @@ export default function HomePage() {
                 Desktop AI Gateway · Open Source
               </Badge>
               <h1 className="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">
-                Turn DeepSeek into an{" "}
-                <span className="text-primary">OpenAI-Compatible</span> Local Gateway
+                One <span className="text-primary">OpenAI-Compatible</span> Gateway for Every AI
+                Model
               </h1>
               <p className="max-w-2xl text-base leading-relaxed text-muted-foreground">
                 Web2AI API Desktop bundles a local OpenAI-compatible gateway, multi-profile load
