@@ -476,9 +476,9 @@ impl SseAccumulator {
                 if map.contains_key("message_id") || map.contains_key("parent_id") {
                     if let Some(Value::Array(frags)) = map.get("fragments") {
                         for frag in frags {
-                            if let Some(c) = frag.get("content") {
-                                self.parse_item(c, delta_content, delta_thought);
-                            }
+                            // Parse the full fragment object so its `type` ("THINK"/"RESPONSE")
+                            // updates `generate_mode` before extracting `content`.
+                            self.parse_item(frag, delta_content, delta_thought);
                         }
                     }
                 } else if let Some(p) = map.get("p").and_then(|v| v.as_str()) {
@@ -486,7 +486,9 @@ impl SseAccumulator {
                     if matches!(tp, "status" | "finish_reason" | "state" | "completion_state") {
                         return;
                     }
-                    if matches!(tp, "response" | "content" | "fragment" | "fragments") {
+                    if matches!(tp, "response" | "content" | "fragment" | "fragments")
+                        || (p.contains("fragments") && tp.parse::<i64>().is_ok())
+                    {
                         if let Some(v) = map.get("v") {
                             self.parse_item(v, delta_content, delta_thought);
                         }
@@ -915,5 +917,36 @@ impl Provider for DeepSeekProvider {
         });
 
         Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SseAccumulator;
+
+    #[test]
+    fn reasoner_think_fragments_never_leak_into_content() {
+        let mut acc = SseAccumulator {
+            thinking_enabled: true,
+            ..Default::default()
+        };
+
+        let line1 = r#"data: {"v":{"response":{"message_id":42,"fragments":[{"type":"THINK","content":"We need answer Vietnamese."}]}}}"#;
+        let (dc1, dt1) = acc.feed_line(line1).expect("line1 ok");
+        assert_eq!(dc1, "");
+        assert_eq!(dt1, "We need answer Vietnamese.");
+
+        let line2 = r#"data: {"p":"response/fragments/0/content","v":" Checking date."}"#;
+        let (dc2, dt2) = acc.feed_line(line2).expect("line2 ok");
+        assert_eq!(dc2, "");
+        assert_eq!(dt2, " Checking date.");
+
+        let line3 = r#"data: {"p":"response/fragments","o":"APPEND","v":[{"type":"RESPONSE","content":"Hôm nay là thứ Hai."}]}"#;
+        let (dc3, dt3) = acc.feed_line(line3).expect("line3 ok");
+        assert_eq!(dc3, "Hôm nay là thứ Hai.");
+        assert_eq!(dt3, "");
+
+        assert_eq!(acc.content, "Hôm nay là thứ Hai.");
+        assert_eq!(acc.thought, "We need answer Vietnamese. Checking date.");
     }
 }
