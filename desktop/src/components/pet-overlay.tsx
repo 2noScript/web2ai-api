@@ -22,6 +22,11 @@ import {
 
 import { apiUrl } from "@/lib/api";
 import {
+  CopyMessageButton,
+  MarkdownMessage,
+  ThinkingIndicator,
+} from "@/components/markdown-message";
+import {
   PET_STORAGE_KEY,
   PetSprite,
   getSavedPetId,
@@ -204,7 +209,9 @@ export function PetOverlay() {
     }
   };
 
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const dragOriginRef = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
   const resetTimerRef = useRef<number | null>(null);
@@ -215,8 +222,15 @@ export function PetOverlay() {
   const [pokeMessage, setPokeMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, expanded]);
+    if (!expanded) {
+      stickToBottomRef.current = true;
+      return;
+    }
+    if (!stickToBottomRef.current) return;
+    messagesEndRef.current?.scrollIntoView({
+      behavior: sending ? "auto" : "smooth",
+    });
+  }, [messages, expanded, sending]);
 
   useEffect(() => {
     fetch(apiUrl("/v1/models"))
@@ -1156,17 +1170,28 @@ export function PetOverlay() {
             </div>
 
           {/* Messages */}
-          <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3 text-xs select-text">
+          <div
+            ref={messagesContainerRef}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+              stickToBottomRef.current = distanceFromBottom < 48;
+            }}
+            className="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3 text-xs select-text"
+          >
             {messages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-1 text-center text-muted-foreground">
                 <p className="font-medium text-foreground">Chat with Web2AI</p>
                 <p className="text-[11px]">Ready on {selectedModel}</p>
               </div>
             ) : (
-              messages.map((msg) => (
+              messages.map((msg, msgIndex) => {
+                const isMsgStreaming =
+                  sending && msg.role === "assistant" && msgIndex === messages.length - 1;
+                return (
                 <div
                   key={msg.id}
-                  className={`flex flex-col ${
+                  className={`group flex flex-col ${
                     msg.role === "user" ? "items-end" : "items-start"
                   }`}
                 >
@@ -1192,17 +1217,40 @@ export function PetOverlay() {
                     {msg.reasoning && (
                       <details className="mb-1.5 rounded bg-black/25 px-2 py-1 text-[11px] text-muted-foreground">
                         <summary className="cursor-pointer font-medium">Reasoning</summary>
-                        <pre className="mt-1 whitespace-pre-wrap font-mono">{msg.reasoning}</pre>
+                        <MarkdownMessage
+                          content={msg.reasoning}
+                          isStreaming={isMsgStreaming && !msg.content}
+                          className="mt-1 text-[11px] text-muted-foreground"
+                        />
                       </details>
                     )}
-                    {(msg.content || (sending && msg.role === "assistant")) && (
-                      <pre className="whitespace-pre-wrap font-sans">
-                        {msg.content || "..."}
-                      </pre>
-                    )}
+                    {(msg.content || (sending && msg.role === "assistant")) &&
+                      (msg.role === "assistant" ? (
+                        msg.content ? (
+                          <MarkdownMessage
+                            content={msg.content}
+                            isStreaming={isMsgStreaming}
+                            className="text-[12px]"
+                          />
+                        ) : (
+                          <ThinkingIndicator
+                            label={msg.reasoning ? "Thinking..." : "Waiting for reply..."}
+                          />
+                        )
+                      ) : (
+                        <pre className="whitespace-pre-wrap font-sans">
+                          {msg.content}
+                        </pre>
+                      ))}
                   </div>
+                  {msg.role === "assistant" && msg.content && !isMsgStreaming && (
+                    <div className="mt-0.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
+                      <CopyMessageButton text={msg.content} />
+                    </div>
+                  )}
                 </div>
-              ))
+                );
+              })
             )}
             <div ref={messagesEndRef} />
           </div>

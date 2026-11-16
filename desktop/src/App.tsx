@@ -23,6 +23,11 @@ import {
 } from "lucide-react";
 
 import { AppFrame } from "@/components/app-frame";
+import {
+  CopyMessageButton,
+  MarkdownMessage,
+  ThinkingIndicator,
+} from "@/components/markdown-message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1031,10 +1036,23 @@ export default function App() {
                     </div>
                   )}
 
-                  {pgOutput && (
+                  {(pgOutput || pgRunning) && (
                     <div className="rounded-md border border-border bg-input p-3">
-                      <div className="mb-1 text-[11px] font-semibold text-primary">Response</div>
-                      <pre className="whitespace-pre-wrap text-xs text-foreground">{pgOutput}</pre>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-primary">Response</span>
+                        {!pgRunning && pgOutput && <CopyMessageButton text={pgOutput} />}
+                      </div>
+                      {pgOutput ? (
+                        <MarkdownMessage
+                          content={pgOutput}
+                          isStreaming={pgRunning}
+                          className="text-xs text-foreground"
+                        />
+                      ) : (
+                        <ThinkingIndicator
+                          label={pgReasoning ? "Thinking..." : "Waiting for response..."}
+                        />
+                      )}
                     </div>
                   )}
                 </CardContent>
