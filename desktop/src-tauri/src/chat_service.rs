@@ -195,10 +195,15 @@ pub async fn execute_chat(
 
     let history = sync_and_get_history(&request.messages, session_data);
     let mut last_err: Option<ChatServiceError> = None;
+    let mut attempted_profiles: Vec<String> = Vec::with_capacity(max_profile_attempts);
 
     for _p_attempt in 0..max_profile_attempts {
-        let (profile, _) = match load_balancer.select_profile(&db, provider_id, Some(session_data))
-        {
+        let (profile, _) = match load_balancer.select_profile_excluding(
+            &db,
+            provider_id,
+            Some(session_data),
+            &attempted_profiles,
+        ) {
             Ok(res) => res,
             Err(LoadBalancerError::NoActiveProfile(msg)) => {
                 return Err(ChatServiceError::new(
@@ -260,6 +265,7 @@ pub async fn execute_chat(
                             Some(session_data),
                             is_auth,
                         );
+                        attempted_profiles.push(profile.id.clone());
                         provider.invalidate_profile(&profile.id).await;
                         last_err = Some(ChatServiceError::new(
                             502,
@@ -349,51 +355,105 @@ pub async fn execute_stream(
     let attachments = extract_images(&http_client, last_content).await;
     let history = sync_and_get_history(&request.messages, &mut session_data);
 
-    let (profile, _) = load_balancer
-        .select_profile(&db, &provider_id, Some(&mut session_data))
-        .map_err(|e| match e {
-            LoadBalancerError::NoActiveProfile(m) => {
-                ChatServiceError::new(503, m, "authentication_error", "no_active_profile")
+    let max_profile_attempts = active_profiles.len().max(1);
+    let mut attempted_profiles: Vec<String> = Vec::with_capacity(max_profile_attempts);
+    let mut selected_profile = None;
+    let mut provider_stream_opt = None;
+    let mut last_stream_err: Option<ChatServiceError> = None;
+
+    for _p_attempt in 0..max_profile_attempts {
+        let (profile, _) = load_balancer
+            .select_profile_excluding(
+                &db,
+                &provider_id,
+                Some(&mut session_data),
+                &attempted_profiles,
+            )
+            .map_err(|e| match e {
+                LoadBalancerError::NoActiveProfile(m) => {
+                    ChatServiceError::new(503, m, "authentication_error", "no_active_profile")
+                }
+                other => ChatServiceError::new(500, other.to_string(), "server_error", "lb_error"),
+            })?;
+
+        let _ = db.record_profile_request(&profile.id);
+
+        let creds = ProviderCredentials {
+            profile_id: Some(profile.id.clone()),
+            token: profile.token.clone(),
+            cookie: profile.cookie.clone(),
+        };
+
+        let has_sess = has_provider_session(&provider_id, &session_data);
+        let effective_prompt = if has_sess {
+            raw_prompt.clone()
+        } else {
+            format_prompt_with_history(&history, &raw_prompt)
+        };
+
+        let mut eff_req = request.clone();
+        if let Some(last) = eff_req.messages.last_mut() {
+            last.content = Some(Value::String(effective_prompt));
+        }
+
+        match provider
+            .chat_completions_stream(&creds, &eff_req, &session_data, &attachments)
+            .await
+        {
+            Ok(stream) => {
+                selected_profile = Some(profile);
+                provider_stream_opt = Some(stream);
+                break;
             }
-            other => ChatServiceError::new(500, other.to_string(), "server_error", "lb_error"),
-        })?;
-
-    let _ = db.record_profile_request(&profile.id);
-
-    let creds = ProviderCredentials {
-        profile_id: Some(profile.id.clone()),
-        token: profile.token.clone(),
-        cookie: profile.cookie.clone(),
-    };
-
-    let has_sess = has_provider_session(&provider_id, &session_data);
-    let effective_prompt = if has_sess {
-        raw_prompt
-    } else {
-        format_prompt_with_history(&history, &raw_prompt)
-    };
-
-    let mut eff_req = request.clone();
-    if let Some(last) = eff_req.messages.last_mut() {
-        last.content = Some(Value::String(effective_prompt));
+            Err(e) => {
+                let err_str = e.to_string();
+                if ProfileLoadBalancer::is_retryable_error(&err_str) {
+                    let is_auth = ProfileLoadBalancer::is_auth_failure(&err_str);
+                    load_balancer.handle_profile_failure(
+                        &db,
+                        &profile.id,
+                        Some(&mut session_data),
+                        is_auth,
+                    );
+                    attempted_profiles.push(profile.id.clone());
+                    provider.invalidate_profile(&profile.id).await;
+                    last_stream_err = Some(ChatServiceError::new(
+                        502,
+                        err_str,
+                        "server_error",
+                        "upstream_error",
+                    ));
+                    continue;
+                }
+                return Err(ChatServiceError::new(
+                    502,
+                    err_str,
+                    "server_error",
+                    "upstream_error",
+                ));
+            }
+        }
     }
 
-    let mut provider_stream = provider
-        .chat_completions_stream(&creds, &eff_req, &session_data, &attachments)
-        .await
-        .map_err(|e| {
-            let err_str = e.to_string();
-            if ProfileLoadBalancer::is_retryable_error(&err_str) {
-                let is_auth = ProfileLoadBalancer::is_auth_failure(&err_str);
-                load_balancer.handle_profile_failure(
-                    &db,
-                    &profile.id,
-                    Some(&mut session_data),
-                    is_auth,
-                );
-            }
-            ChatServiceError::new(502, err_str, "server_error", "upstream_error")
-        })?;
+    let profile = selected_profile.ok_or_else(|| {
+        last_stream_err.unwrap_or_else(|| {
+            ChatServiceError::new(
+                503,
+                "All profiles failed for streaming request",
+                "server_error",
+                "all_profiles_failed",
+            )
+        })
+    })?;
+    let mut provider_stream = provider_stream_opt.ok_or_else(|| {
+        ChatServiceError::new(
+            500,
+            "Missing provider stream",
+            "server_error",
+            "stream_init_error",
+        )
+    })?;
+    let _ = &profile;
 
     let (tx, rx) = mpsc::channel::<String>(64);
     let model_name = request.model.clone();

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
+  AppWindow,
   ArrowUp,
   AudioLines,
   Check,
@@ -936,9 +938,17 @@ export function PetOverlay() {
             type="button"
             onClick={() => void setWindowExpanded(!expanded)}
             title="Expand Chat"
-            className="flex h-7 w-9 items-center justify-center rounded-r-full text-foreground/85 transition-colors hover:bg-white/10 hover:text-foreground"
+            className="flex h-7 w-9 items-center justify-center text-foreground/85 transition-colors hover:bg-white/10 hover:text-foreground"
           >
             <ChevronDown className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => void invoke("open_main_window").catch(() => {})}
+            title="Open Main App"
+            className="flex h-7 w-9 items-center justify-center rounded-r-full text-foreground/85 transition-colors hover:bg-white/10 hover:text-primary"
+          >
+            <AppWindow className="h-3.5 w-3.5" />
           </button>
         </div>
       )}
@@ -1117,6 +1127,14 @@ export function PetOverlay() {
               )}
               <div className="flex shrink-0 items-center gap-1.5">
                 <GripHorizontal className="h-3.5 w-3.5 text-muted-foreground/45" />
+                <button
+                  type="button"
+                  onClick={() => void invoke("open_main_window").catch(() => {})}
+                  title="Open Main App"
+                  className="flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-foreground/80 transition-colors hover:border-primary/50 hover:bg-primary/15 hover:text-primary"
+                >
+                  <AppWindow className="h-3 w-3" />
+                </button>
                 <button
                   type="button"
                   onClick={handleComposeClick}

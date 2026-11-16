@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
@@ -15,7 +16,7 @@ import {
   Plus,
   RefreshCw,
   Send,
-  Sparkles,
+  PawPrint,
   Trash2,
   Users,
   X,
@@ -111,12 +112,13 @@ function maskSecret(val?: string | null): string {
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>("profiles");
   const [providerFilter, setProviderFilter] = useState<"all" | ProviderType>("all");
-  const [loading, setLoading] = useState(false);
 
   // Pet Store state
   const [selectedPetId, setSelectedPetId] = useState<PetId>(() => getSavedPetId());
   const [previewPetStatus, setPreviewPetStatus] = useState<PetStatus>("idle");
+  const [appVersion, setAppVersion] = useState("0.1.1");
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+  const [hasAvailableUpdate, setHasAvailableUpdate] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [serverToggling, setServerToggling] = useState(false);
 
@@ -163,6 +165,21 @@ export default function App() {
   };
 
   useEffect(() => {
+    getVersion()
+      .then((v) => setAppVersion(v))
+      .catch(() => {});
+
+    const updateTimer = window.setTimeout(() => {
+      check()
+        .then((update) => {
+          if (update) {
+            setHasAvailableUpdate(true);
+            setUpdateStatus(`Update v${update.version} available`);
+          }
+        })
+        .catch(() => {});
+    }, 2000);
+
     fetch(apiUrl("/v1/pet/state"))
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
@@ -172,6 +189,8 @@ export default function App() {
         }
       })
       .catch(() => {});
+
+    return () => window.clearTimeout(updateTimer);
   }, []);
 
   const handleSelectPet = async (petId: PetId) => {
@@ -266,9 +285,7 @@ export default function App() {
   };
 
   const refreshAll = async () => {
-    setLoading(true);
     await Promise.all([fetchHealth(), fetchProfiles(), fetchKeys()]);
-    setLoading(false);
   };
 
   useEffect(() => {
@@ -508,20 +525,13 @@ export default function App() {
     <>
       <Button
         variant="ghost"
-        size="icon-xs"
-        onClick={() => void invoke("toggle_pet_window").catch(() => {})}
-        title="Show/Hide Floating Pet"
+        size="xs"
+        className="gap-1.5 px-2 text-[11px]"
+        onClick={() => void invoke("enter_pet_only_mode").catch(() => {})}
+        title="Hide main window and keep only Floating Pet"
       >
-        <Sparkles className="h-3.5 w-3.5 text-primary" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        onClick={() => void refreshAll()}
-        disabled={loading}
-        title="Refresh"
-      >
-        <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+        <PawPrint className="h-4 w-4 text-primary" />
+        <span>Pet Only</span>
       </Button>
       <Button
         variant="secondary"
@@ -540,18 +550,17 @@ export default function App() {
       <div className="flex h-full w-full overflow-hidden">
         {/* Sidebar */}
         <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-sidebar p-3">
-          <div className="mb-4 flex items-center gap-2.5 px-2 py-1">
-            <img
-              src="/logo.png"
-              alt="Web2AI API"
-              className="h-7 w-7 shrink-0 object-contain"
-            />
+          <div className="mb-4 flex items-center gap-3 px-1.5 py-1">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-primary/30 bg-card/90 p-1 shadow-[0_0_20px_-6px_rgba(54,181,186,0.45)]">
+              <img
+                src="/logo.png"
+                alt="Web2AI API"
+                className="h-full w-full object-contain drop-shadow-[0_2px_6px_rgba(54,181,186,0.3)]"
+              />
+            </div>
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-sidebar-foreground">
                 Web2AI API
-              </div>
-              <div className="truncate text-[11px] text-muted-foreground">
-                Rust Gateway :8088
               </div>
             </div>
           </div>
@@ -616,7 +625,7 @@ export default function App() {
               }`}
             >
               <span className="flex items-center gap-2">
-                <Sparkles className="h-3.5 w-3.5" />
+                <PawPrint className="h-4 w-4" />
                 Pet Store
               </span>
               <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
@@ -679,13 +688,17 @@ export default function App() {
                 type="button"
                 disabled={checkingUpdate}
                 onClick={() => void handleCheckUpdate()}
-                className="flex w-full items-center justify-between text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                className={`flex w-full items-center justify-between text-[11px] transition-colors disabled:opacity-50 ${
+                  hasAvailableUpdate
+                    ? "font-medium text-primary hover:text-primary/80"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
               >
                 <span className="flex items-center gap-1.5">
                   <RefreshCw className={`h-3 w-3 ${checkingUpdate ? "animate-spin" : ""}`} />
                   {updateStatus ?? "Check for Updates"}
                 </span>
-                <span className="font-mono text-[10px]">v0.1.0</span>
+                <span className="font-mono text-[10px]">v{appVersion}</span>
               </button>
             </div>
           </div>
@@ -1037,7 +1050,7 @@ export default function App() {
                 <div>
                   <h2 className="text-base font-semibold tracking-tight">Pet Store</h2>
                   <p className="text-xs text-muted-foreground">
-                    Choose your floating desktop pet companion. Chat history &amp; selection are saved in SQLite.
+                    Choose your floating desktop pet companion.
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1077,7 +1090,7 @@ export default function App() {
                     className="h-7 gap-1.5 text-xs"
                     onClick={() => void invoke("summon_pet_window").catch(() => {})}
                   >
-                    <Sparkles className="h-3.5 w-3.5" />
+                    <PawPrint className="h-4 w-4" />
                     Bring Pet Here
                   </Button>
                   <Button
@@ -1163,7 +1176,7 @@ export default function App() {
                   {editingProfile ? "Edit Profile" : "Add Profile"}
                 </CardTitle>
                 <CardDescription className="text-xs">
-                  Credentials are stored locally in SQLite.
+                  Credentials are stored locally on your device.
                 </CardDescription>
               </div>
               <Button variant="ghost" size="icon-xs" onClick={() => setProfileModalOpen(false)}>

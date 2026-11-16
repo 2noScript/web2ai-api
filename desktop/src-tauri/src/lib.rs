@@ -234,6 +234,17 @@ fn open_main_window(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+fn enter_pet_only_mode(app: tauri::AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    if let Some(pet) = app.get_webview_window("pet") {
+        let _ = pet.show();
+        let _ = pet.set_focus();
+    }
+}
+
+#[tauri::command]
 fn summon_pet_window(app: tauri::AppHandle) -> bool {
     let Some(pet) = app.get_webview_window("pet") else {
         return false;
@@ -369,6 +380,17 @@ pub fn run() {
 
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    if let Some(pet) = window.app_handle().get_webview_window("pet") {
+                        let _ = pet.show();
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_backend_status,
             restart_backend,
@@ -385,6 +407,7 @@ pub fn run() {
             db_delete_api_key,
             toggle_pet_window,
             open_main_window,
+            enter_pet_only_mode,
             summon_pet_window
         ])
         .build(tauri::generate_context!())

@@ -6,11 +6,13 @@ import "./index.css"
 import App from "./App.tsx"
 import { PetOverlay } from "./components/pet-overlay.tsx"
 
-let isPetWindow = false
-try {
-  isPetWindow = getCurrentWebviewWindow().label === "pet"
-} catch {
-  isPetWindow = false
+let isPetWindow = new URLSearchParams(window.location.search).get("window") === "pet"
+if (!isPetWindow) {
+  try {
+    isPetWindow = getCurrentWebviewWindow().label === "pet"
+  } catch {
+    isPetWindow = false
+  }
 }
 
 if (isPetWindow) {

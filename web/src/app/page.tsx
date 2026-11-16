@@ -20,6 +20,7 @@ import {
   DownloadsGrid,
   HeroDownloadAction,
 } from "@/components/download-section";
+import { PetPreview } from "@/components/pet-preview";
 import { REPO_URL } from "@/lib/releases";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -159,15 +160,76 @@ export default function HomePage() {
               </pre>
             </div>
             <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-border bg-card p-5 text-center md:col-span-2">
-              <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-primary/30 bg-primary/10 text-3xl">
-                🦊
-              </div>
+              <PetPreview />
               <div>
                 <div className="text-sm font-semibold">Floating Desktop Pet</div>
                 <p className="mt-1 text-xs text-muted-foreground">
                   5 pixel-art companions (Guitarist Fox, Vocalist Bot, Flutist Neko, Maestro Owl,
                   Drummer Shiba) with live chat &amp; SQLite history.
                 </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Screenshots Showcase */}
+        <section id="screenshots" className="mx-auto max-w-5xl px-6 py-12">
+          <div className="mb-8">
+            <h2 className="text-2xl font-bold tracking-tight">Inside Web2AI API Desktop</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Manage provider profiles, test completions in the Playground, or chat directly from
+              the floating Desktop Pet.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+            <div className="overflow-hidden rounded-2xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-2.5 text-xs font-medium text-muted-foreground">
+                Provider Profiles &amp; Load Balancing
+              </div>
+              <Image
+                src={`${BASE_PATH}/images/app-main.png`}
+                alt="Web2AI API Provider Profiles"
+                width={1240}
+                height={820}
+                className="w-full object-cover"
+              />
+            </div>
+            <div className="overflow-hidden rounded-2xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-2.5 text-xs font-medium text-muted-foreground">
+                API Playground
+              </div>
+              <Image
+                src={`${BASE_PATH}/images/app-chat.png`}
+                alt="Web2AI API Playground"
+                width={1240}
+                height={820}
+                className="w-full object-cover"
+              />
+            </div>
+            <div className="overflow-hidden rounded-2xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-2.5 text-xs font-medium text-muted-foreground">
+                Pet Store — 5 Pixel-Art Companions
+              </div>
+              <Image
+                src={`${BASE_PATH}/images/app-pets.png`}
+                alt="Web2AI Pet Store"
+                width={1240}
+                height={820}
+                className="w-full object-cover"
+              />
+            </div>
+            <div className="overflow-hidden rounded-2xl border border-border bg-card">
+              <div className="border-b border-border px-4 py-2.5 text-xs font-medium text-muted-foreground">
+                Floating Desktop Pet &amp; Quick Chat
+              </div>
+              <div className="flex justify-center bg-[#121316] p-2">
+                <Image
+                  src={`${BASE_PATH}/images/pet-chat.png`}
+                  alt="Web2AI Floating Desktop Pet Chat"
+                  width={600}
+                  height={660}
+                  className="max-h-[340px] w-auto object-contain"
+                />
               </div>
             </div>
           </div>
