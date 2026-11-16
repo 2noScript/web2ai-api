@@ -8,11 +8,11 @@
 
 ## Supported Providers
 
-| Logo | Provider | Status | Auth | Features |
-| :---: | --- | :---: | --- | --- |
-| <img src="desktop/public/providers/deepseek.svg" width="24" height="24" alt="DeepSeek" /> | **DeepSeek** | ✅ Completed | `token` | Streaming, Reasoning (`deepseek-reasoner`), Sticky Sessions |
-| <img src="desktop/public/providers/gemini.svg" width="24" height="24" alt="Gemini" /> | **Google Gemini** | 🚧 In Progress | `cookie` | Streaming, Vision (`image_url`), Sticky Sessions |
-| <img src="desktop/public/providers/metaai.svg" width="24" height="24" alt="Meta AI" /> | **Meta AI** | 🚧 In Progress | `cookie` | Streaming, Sticky Sessions |
+| Logo | Provider | Status | Auth | Features | Docs |
+| :---: | --- | :---: | --- | --- | :---: |
+| <img src="desktop/public/providers/deepseek.svg" width="24" height="24" alt="DeepSeek" /> | [**DeepSeek**](docs/providers/deepseek.md) | ✅ Completed | `token` | Streaming, Reasoning (`deepseek-reasoner`), Sticky Sessions | [Guide](docs/providers/deepseek.md) |
+| <img src="desktop/public/providers/gemini.svg" width="24" height="24" alt="Gemini" /> | **Google Gemini** | 🚧 In Progress | `cookie` | Streaming, Vision (`image_url`), Sticky Sessions | Coming soon |
+| <img src="desktop/public/providers/metaai.svg" width="24" height="24" alt="Meta AI" /> | **Meta AI** | 🚧 In Progress | `cookie` | Streaming, Sticky Sessions | Coming soon |
 
 ---
 
