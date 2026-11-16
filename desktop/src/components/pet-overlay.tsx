@@ -4,17 +4,17 @@ import { LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
-  AppWindow,
   ArrowUp,
   AudioLines,
   Check,
-  ChevronDown,
   ChevronUp,
   GripHorizontal,
+  Home,
   ImagePlus,
-  Minimize2,
+  Minus,
   PanelLeft,
   Pencil,
+  Plus,
   SquarePen,
   Trash2,
   X,
@@ -70,7 +70,8 @@ interface PetStateResponse {
   messages: PetMessageRow[];
 }
 
-const PET_COLLAPSED_SIZE = new LogicalSize(280, 220);
+const PET_TINY_SIZE = new LogicalSize(280, 200);
+const PET_QUICK_SIZE = new LogicalSize(280, 250);
 const PET_EXPANDED_SIZE = new LogicalSize(560, 620);
 const SESSION_STORAGE_KEY = "web2ai_pet_session_id";
 
@@ -220,6 +221,34 @@ export function PetOverlay() {
   const pokeCountRef = useRef(0);
   const pokeResetRef = useRef<number | null>(null);
   const [pokeMessage, setPokeMessage] = useState<string | null>(null);
+  const [mainAppOpen, setMainAppOpen] = useState(true);
+  const [quickBarOpen, setQuickBarOpen] = useState(false);
+  const [miniInput, setMiniInput] = useState("");
+  const miniInputRef = useRef<HTMLInputElement | null>(null);
+  const homePointerHandledRef = useRef(false);
+
+  useEffect(() => {
+    invoke<boolean>("is_main_window_visible")
+      .then(setMainAppOpen)
+      .catch(() => {});
+    const unlisten = listen<boolean>("main_window_visibility", (event) => {
+      setMainAppOpen(event.payload);
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  const handleToggleMainWindow = async () => {
+    setMainAppOpen((prev) => !prev);
+    try {
+      const visible = await invoke<boolean>("toggle_main_window");
+      setMainAppOpen(visible);
+    } catch {
+      await invoke("open_main_window").catch(() => {});
+      setMainAppOpen(true);
+    }
+  };
 
   useEffect(() => {
     if (!expanded) {
@@ -503,17 +532,47 @@ export function PetOverlay() {
 
   const selectedModelMeta = parseModelMeta(selectedModel);
 
-  const setWindowExpanded = async (next: boolean) => {
-    setExpanded(next);
+  const setWindowExpanded = (next: boolean) => {
     try {
       const win = getCurrentWebviewWindow();
-      await win.setSize(next ? PET_EXPANDED_SIZE : PET_COLLAPSED_SIZE);
+      if (next) {
+        setExpanded(true);
+        void win.setSize(PET_EXPANDED_SIZE);
+        window.requestAnimationFrame(() => inputRef.current?.focus());
+      } else {
+        setExpanded(false);
+        setQuickBarOpen(false);
+        void win.setSize(PET_TINY_SIZE);
+      }
     } catch {
-      // Ignore outside Tauri
+      setExpanded(next);
     }
-    if (next) {
-      window.setTimeout(() => inputRef.current?.focus(), 60);
+  };
+
+  const toggleQuickBar = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    const next = !quickBarOpen;
+    setQuickBarOpen(next);
+    try {
+      const win = getCurrentWebviewWindow();
+      void win.setSize(next ? PET_QUICK_SIZE : PET_TINY_SIZE);
+      if (next) {
+        window.requestAnimationFrame(() => miniInputRef.current?.focus());
+      }
+    } catch {
+      // ignore
     }
+  };
+
+  const handleMiniSend = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const text = miniInput.trim();
+    if (!text && attachedImages.length === 0) return;
+    if (sending) return;
+
+    setMiniInput("");
+    setWindowExpanded(true);
+    void handleSend(text);
   };
 
   const handlePetPointerDown = (e: React.PointerEvent) => {
@@ -576,7 +635,20 @@ export function PetOverlay() {
     }, 2200);
   };
 
-  const handleComposeClick = () => {
+  const handleComposeClick = (e?: React.MouseEvent | { keepCollapsed?: boolean }) => {
+    const keepCollapsed = Boolean(e && "keepCollapsed" in e && e.keepCollapsed);
+
+    // If current conversation is already empty, just focus input without polluting DB with empty sessions
+    if (messages.length === 0) {
+      if (keepCollapsed) {
+        setMiniInput("");
+        miniInputRef.current?.focus();
+      } else {
+        setWindowExpanded(true);
+      }
+      return;
+    }
+
     const fresh = createSessionId();
     localStorage.setItem(SESSION_STORAGE_KEY, fresh);
     setSessionId(fresh);
@@ -587,7 +659,12 @@ export function PetOverlay() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: fresh, title: "New chat", model: selectedModel }),
     }).then(() => refreshPetState());
-    void setWindowExpanded(true);
+    if (keepCollapsed) {
+      setMiniInput("");
+      miniInputRef.current?.focus();
+    } else {
+      setWindowExpanded(true);
+    }
   };
 
   const handleSelectSession = async (nextSid: string) => {
@@ -687,8 +764,8 @@ export function PetOverlay() {
     }
   };
 
-  const handleSend = async () => {
-    const prompt = input.trim();
+  const handleSend = async (overridePrompt?: string) => {
+    const prompt = (overridePrompt !== undefined ? overridePrompt : input).trim();
     const imagesToSend = attachedImages;
     if ((!prompt && imagesToSend.length === 0) || sending) return;
 
@@ -936,48 +1013,99 @@ export function PetOverlay() {
           </button>
           <button
             type="button"
-            onClick={() => void setWindowExpanded(!expanded)}
-            title={statusSubtitle}
+            onClick={toggleQuickBar}
+            title={quickBarOpen ? "Hide Chat" : "Open Chat"}
             className={`flex h-7 w-9 items-center justify-center transition-colors hover:bg-white/10 ${
-              status === "thinking"
-                ? "text-brand"
-                : status === "error"
-                  ? "text-destructive"
-                  : "text-foreground/85 hover:text-foreground"
+              quickBarOpen
+                ? "bg-primary/20 text-primary hover:text-primary"
+                : status === "thinking"
+                  ? "text-brand"
+                  : status === "error"
+                    ? "text-destructive"
+                    : "text-foreground/85 hover:text-foreground"
             }`}
           >
             <AudioLines className={`h-3.5 w-3.5 ${status === "thinking" ? "animate-pulse" : ""}`} />
           </button>
           <button
             type="button"
-            onClick={() => void setWindowExpanded(!expanded)}
-            title="Expand Chat"
-            className="flex h-7 w-9 items-center justify-center text-foreground/85 transition-colors hover:bg-white/10 hover:text-foreground"
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              e.stopPropagation();
+              homePointerHandledRef.current = true;
+              void handleToggleMainWindow();
+            }}
+            onClick={() => {
+              if (homePointerHandledRef.current) {
+                homePointerHandledRef.current = false;
+                return;
+              }
+              void handleToggleMainWindow();
+            }}
+            title={mainAppOpen ? "Hide Main App (Home)" : "Open Main App (Home)"}
+            className={`flex h-7 w-9 items-center justify-center rounded-r-full transition-colors hover:bg-white/10 ${
+              mainAppOpen
+                ? "bg-primary/20 text-primary hover:text-primary"
+                : "text-foreground/85 hover:text-primary"
+            }`}
           >
-            <ChevronDown className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => void invoke("open_main_window").catch(() => {})}
-            title="Open Main App"
-            className="flex h-7 w-9 items-center justify-center rounded-r-full text-foreground/85 transition-colors hover:bg-white/10 hover:text-primary"
-          >
-            <AppWindow className="h-3.5 w-3.5" />
+            <Home className="h-3.5 w-3.5" />
           </button>
         </div>
       )}
 
-      {/* Bottom: Compact Status Pill OR Expanded Quick Chat */}
-      {!expanded ? (
+      {/* Mini Quick-Chat Input: Only shown when quickBarOpen is true */}
+      {!expanded && quickBarOpen && (
+        <form
+          onSubmit={(e) => void handleMiniSend(e)}
+          className="relative z-20 mt-2 flex w-full max-w-[256px] items-center gap-1.5 rounded-full border border-white/12 bg-[#252525]/95 px-2.5 py-1 shadow-lg backdrop-blur-xl transition-colors focus-within:border-primary/60"
+        >
+          <button
+            type="button"
+            onClick={() => handleComposeClick({ keepCollapsed: true })}
+            title="Start new chat"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground/80 transition-colors hover:bg-white/10 hover:text-foreground"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+          <input
+            ref={miniInputRef}
+            type="text"
+            value={miniInput}
+            onChange={(e) => setMiniInput(e.target.value)}
+            placeholder={messages.length > 0 ? "Ask anything..." : "Start new chat..."}
+            className="min-w-0 flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground/60 outline-none"
+          />
+          <button
+            type="submit"
+            disabled={!miniInput.trim() && attachedImages.length === 0}
+            title="Send (Enter)"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/20 text-primary transition-all hover:bg-primary hover:text-primary-foreground disabled:opacity-30 disabled:hover:bg-primary/20 disabled:hover:text-primary"
+          >
+            <ArrowUp className="h-3.5 w-3.5 stroke-[2.5]" />
+          </button>
+        </form>
+      )}
+
+      {/* Bottom: Compact Status Pill - Always shown when in collapsed mode */}
+      {!expanded && (
         <button
           type="button"
-          onClick={() => void setWindowExpanded(true)}
-          className="mt-2 w-full max-w-[248px] rounded-2xl border border-white/12 bg-[#222222]/90 px-4 py-2 text-left shadow-xl backdrop-blur-xl transition-colors hover:border-white/25"
+          onClick={() => setWindowExpanded(true)}
+          className="mt-1.5 w-full max-w-[256px] rounded-2xl border border-white/12 bg-[#222222]/90 px-3.5 py-2 text-left shadow-xl backdrop-blur-xl transition-colors hover:border-white/25"
         >
-          <div className="truncate text-xs font-semibold text-foreground">{lastTitle}</div>
-          <div className="truncate text-[11px] text-muted-foreground">{statusSubtitle}</div>
+          <div className="flex items-center gap-1.5 truncate text-xs font-semibold text-foreground">
+            <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400">
+              <Check className="h-2.5 w-2.5 stroke-[3]" />
+            </span>
+            <span className="truncate">{lastTitle}</span>
+          </div>
+          <div className="truncate text-[11px] text-muted-foreground pl-5">{statusSubtitle}</div>
         </button>
-      ) : (
+      )}
+
+      {/* Expanded Quick Chat */}
+      {expanded && (
         <div
           ref={chatBoxRef}
           className={`relative flex min-h-0 w-full flex-1 flex-row overflow-hidden rounded-2xl border bg-[#202020]/95 text-foreground backdrop-blur-xl transition-shadow duration-500 ${
@@ -1143,11 +1271,27 @@ export function PetOverlay() {
                 <GripHorizontal className="h-3.5 w-3.5 text-muted-foreground/45" />
                 <button
                   type="button"
-                  onClick={() => void invoke("open_main_window").catch(() => {})}
-                  title="Open Main App"
-                  className="flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-foreground/80 transition-colors hover:border-primary/50 hover:bg-primary/15 hover:text-primary"
+                  onPointerDown={(e) => {
+                    if (e.button !== 0) return;
+                    e.stopPropagation();
+                    homePointerHandledRef.current = true;
+                    void handleToggleMainWindow();
+                  }}
+                  onClick={() => {
+                    if (homePointerHandledRef.current) {
+                      homePointerHandledRef.current = false;
+                      return;
+                    }
+                    void handleToggleMainWindow();
+                  }}
+                  title={mainAppOpen ? "Hide Main App (Home)" : "Open Main App (Home)"}
+                  className={`flex h-6 w-6 items-center justify-center rounded-md border transition-colors ${
+                    mainAppOpen
+                      ? "border-primary/50 bg-primary/20 text-primary"
+                      : "border-white/10 bg-white/5 text-foreground/80 hover:border-primary/50 hover:bg-primary/15 hover:text-primary"
+                  }`}
                 >
-                  <AppWindow className="h-3 w-3" />
+                  <Home className="h-3 w-3" />
                 </button>
                 <button
                   type="button"
@@ -1159,12 +1303,11 @@ export function PetOverlay() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => void setWindowExpanded(false)}
-                  title="Collapse Chat"
-                  className="flex h-6 items-center gap-1 rounded-md border border-white/15 bg-white/10 px-2 text-[10px] font-medium text-foreground transition-colors hover:border-primary/50 hover:bg-primary/20"
+                  onClick={() => setWindowExpanded(false)}
+                  title="Minimize Chat"
+                  className="flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-foreground/80 transition-colors hover:border-white/25 hover:bg-white/10 hover:text-foreground"
                 >
-                  <Minimize2 className="h-3 w-3" />
-                  <span>Minimize</span>
+                  <Minus className="h-3 w-3" />
                 </button>
               </div>
             </div>

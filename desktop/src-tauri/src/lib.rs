@@ -228,8 +228,42 @@ fn toggle_pet_window(app: tauri::AppHandle) -> bool {
 #[tauri::command]
 fn open_main_window(app: tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
         let _ = win.show();
         let _ = win.set_focus();
+        let _ = app.emit("main_window_visibility", true);
+    }
+}
+
+#[tauri::command]
+fn toggle_main_window(app: tauri::AppHandle) -> bool {
+    if let Some(win) = app.get_webview_window("main") {
+        let visible = win.is_visible().unwrap_or(false);
+        let minimized = win.is_minimized().unwrap_or(false);
+        if visible && !minimized {
+            let _ = win.hide();
+            let _ = app.emit("main_window_visibility", false);
+            return false;
+        }
+        if minimized {
+            let _ = win.unminimize();
+        }
+        let _ = win.show();
+        let _ = win.set_focus();
+        let _ = app.emit("main_window_visibility", true);
+        return true;
+    }
+    false
+}
+
+#[tauri::command]
+fn is_main_window_visible(app: tauri::AppHandle) -> bool {
+    if let Some(win) = app.get_webview_window("main") {
+        let visible = win.is_visible().unwrap_or(false);
+        let minimized = win.is_minimized().unwrap_or(false);
+        visible && !minimized
+    } else {
+        false
     }
 }
 
@@ -237,6 +271,7 @@ fn open_main_window(app: tauri::AppHandle) {
 fn enter_pet_only_mode(app: tauri::AppHandle) {
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.hide();
+        let _ = app.emit("main_window_visibility", false);
     }
     if let Some(pet) = app.get_webview_window("pet") {
         let _ = pet.show();
@@ -385,6 +420,7 @@ pub fn run() {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();
+                    let _ = window.app_handle().emit("main_window_visibility", false);
                     if let Some(pet) = window.app_handle().get_webview_window("pet") {
                         let _ = pet.show();
                     }
@@ -407,6 +443,8 @@ pub fn run() {
             db_delete_api_key,
             toggle_pet_window,
             open_main_window,
+            toggle_main_window,
+            is_main_window_visible,
             enter_pet_only_mode,
             summon_pet_window
         ])
