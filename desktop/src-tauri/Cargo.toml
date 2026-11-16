@@ -1,6 +1,6 @@
 [package]
 name = "web2ai-desktop"
-version = "0.1.4"
+version = "0.1.5"
 description = "Web2AI API Desktop Application"
 authors = ["Web2AI"]
 edition = "2021"
@@ -22,6 +22,7 @@ tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 diesel = { version = "2", default-features = false, features = ["sqlite", "returning_clauses_for_sqlite_3_35"] }

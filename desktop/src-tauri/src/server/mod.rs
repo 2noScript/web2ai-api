@@ -1,6 +1,8 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
     extract::{Path, Query, State},
@@ -20,7 +22,7 @@ use tokio::sync::watch;
 use tower_http::cors::CorsLayer;
 
 use crate::chat_service::{execute_chat, execute_stream};
-use crate::db::{CreateProfileInput, Database, UpdateProfileInput};
+use crate::db::{CreateProfileInput, Database, GatewayLogEntry, UpdateProfileInput};
 use crate::load_balancer::ProfileLoadBalancer;
 use crate::openai::ChatCompletionRequest;
 use crate::providers::ProviderRegistry;
@@ -35,7 +37,23 @@ pub struct AppState {
     pub app_handle: Option<tauri::AppHandle>,
 }
 
+static PET_REACT_TO_TRAFFIC: AtomicBool = AtomicBool::new(true);
+
+pub fn set_pet_react_to_traffic(enabled: bool) {
+    PET_REACT_TO_TRAFFIC.store(enabled, Ordering::Relaxed);
+}
+
+fn record_gateway_log(state: &AppState, log: GatewayLogEntry) {
+    let _ = state.db.insert_gateway_log(&log);
+    if let Some(handle) = &state.app_handle {
+        let _ = handle.emit("gateway:request", log);
+    }
+}
+
 fn emit_pet_status(state: &AppState, status: &str, model: &str) {
+    if !PET_REACT_TO_TRAFFIC.load(Ordering::Relaxed) {
+        return;
+    }
     if let Some(handle) = &state.app_handle {
         let _ = handle.emit(
             "pet:status",
@@ -65,6 +83,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/keys/{key}", delete(delete_key_handler))
         .route("/v1/models", get(list_all_models_handler))
         .route("/v1/chat/completions", post(unified_chat_completions_handler))
+        .route("/v1/gateway/logs", get(get_gateway_logs_handler).delete(clear_gateway_logs_handler))
+        .route("/v1/settings/cache", get(get_cache_settings_handler).put(set_cache_settings_handler))
+        .route("/v1/pet/react-traffic", get(get_pet_react_handler).put(set_pet_react_handler))
+        .route("/v1/pet/custom", get(get_custom_pets_handler).put(set_custom_pets_handler))
         .route("/v1/pet/state", get(get_pet_state_handler))
         .route("/v1/pet/selected", put(set_pet_selected_handler))
         .route("/v1/pet/sessions", post(create_pet_session_handler))
@@ -764,6 +786,7 @@ async fn run_chat_completions(
         .unwrap_or_default();
 
     let model_label = format!("{provider}:{}", request.model);
+    let started_at = Instant::now();
     emit_pet_status(&state, "thinking", &model_label);
 
     if request.stream {
@@ -790,6 +813,20 @@ async fn run_chat_completions(
                         .to_string();
                     if payload == "[DONE]" {
                         emit_pet_status(&state_for_stream, "done", &model_for_stream);
+                        let _ = state_for_stream.db.prune_old_sessions();
+                        record_gateway_log(
+                            &state_for_stream,
+                            GatewayLogEntry {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                endpoint: "/v1/chat/completions".to_string(),
+                                model: model_for_stream.clone(),
+                                status_code: 200,
+                                latency_ms: started_at.elapsed().as_millis() as u64,
+                                stream: true,
+                                error: None,
+                            },
+                        );
                     }
                     Ok::<Event, Infallible>(Event::default().data(payload))
                 });
@@ -803,6 +840,19 @@ async fn run_chat_completions(
             }
             Err(err) => {
                 emit_pet_status(&state, "error", &model_label);
+                record_gateway_log(
+                    &state,
+                    GatewayLogEntry {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        endpoint: "/v1/chat/completions".to_string(),
+                        model: model_label,
+                        status_code: err.status,
+                        latency_ms: started_at.elapsed().as_millis() as u64,
+                        stream: true,
+                        error: Some(err.message.clone()),
+                    },
+                );
                 let status = StatusCode::from_u16(err.status).unwrap_or(StatusCode::BAD_GATEWAY);
                 (status, Json(err.to_json())).into_response()
             }
@@ -820,11 +870,25 @@ async fn run_chat_completions(
         {
             Ok(completion) => {
                 emit_pet_status(&state, "done", &model_label);
+                record_gateway_log(
+                    &state,
+                    GatewayLogEntry {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        endpoint: "/v1/chat/completions".to_string(),
+                        model: model_label,
+                        status_code: 200,
+                        latency_ms: started_at.elapsed().as_millis() as u64,
+                        stream: false,
+                        error: None,
+                    },
+                );
                 let _ = state.db.save_session_data(
                     &session_id,
                     &session_data,
                     api_key_hash.as_deref(),
                 );
+                let _ = state.db.prune_old_sessions();
                 let mut resp = Json(completion).into_response();
                 if let Ok(hv) = HeaderValue::from_str(&session_id) {
                     resp.headers_mut().insert("x-session-id", hv);
@@ -833,11 +897,126 @@ async fn run_chat_completions(
             }
             Err(err) => {
                 emit_pet_status(&state, "error", &model_label);
+                record_gateway_log(
+                    &state,
+                    GatewayLogEntry {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        endpoint: "/v1/chat/completions".to_string(),
+                        model: model_label,
+                        status_code: err.status,
+                        latency_ms: started_at.elapsed().as_millis() as u64,
+                        stream: false,
+                        error: Some(err.message.clone()),
+                    },
+                );
                 let status = StatusCode::from_u16(err.status).unwrap_or(StatusCode::BAD_GATEWAY);
                 (status, Json(err.to_json())).into_response()
             }
         }
     }
+}
+
+async fn get_gateway_logs_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let limit = state
+        .db
+        .get_cache_settings()
+        .map(|s| s.max_logs)
+        .unwrap_or(200);
+    let logs = state.db.list_gateway_logs(limit).unwrap_or_default();
+    Json(json!({ "data": logs }))
+}
+
+async fn clear_gateway_logs_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let _ = state.db.clear_gateway_logs();
+    Json(json!({ "ok": true }))
+}
+
+#[derive(Deserialize)]
+struct UpdateCacheSettingsRequest {
+    max_sessions: i64,
+    max_logs: i64,
+}
+
+async fn get_cache_settings_handler(State(state): State<AppState>) -> Response {
+    match (state.db.get_cache_settings(), state.db.get_cache_stats()) {
+        (Ok(settings), Ok(stats)) => Json(json!({
+            "settings": settings,
+            "stats": stats,
+        }))
+        .into_response(),
+        (Err(e), _) | (_, Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "detail": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn set_cache_settings_handler(
+    State(state): State<AppState>,
+    Json(body): Json<UpdateCacheSettingsRequest>,
+) -> Response {
+    match state.db.set_cache_settings(body.max_sessions, body.max_logs) {
+        Ok(settings) => {
+            let stats = state.db.get_cache_stats().ok();
+            Json(json!({
+                "settings": settings,
+                "stats": stats,
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "detail": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SetPetReactRequest {
+    enabled: bool,
+}
+
+async fn get_pet_react_handler() -> Json<serde_json::Value> {
+    Json(json!({ "enabled": PET_REACT_TO_TRAFFIC.load(Ordering::Relaxed) }))
+}
+
+async fn set_pet_react_handler(
+    State(state): State<AppState>,
+    Json(body): Json<SetPetReactRequest>,
+) -> Json<serde_json::Value> {
+    PET_REACT_TO_TRAFFIC.store(body.enabled, Ordering::Relaxed);
+    let _ = state
+        .db
+        .set_setting("pet_react_traffic", if body.enabled { "true" } else { "false" });
+    Json(json!({ "enabled": body.enabled }))
+}
+
+#[derive(Deserialize)]
+struct SetCustomPetsRequest {
+    pets: serde_json::Value,
+}
+
+async fn get_custom_pets_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let pets: serde_json::Value = state
+        .db
+        .get_setting("pet_custom_list")
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| json!([]));
+    Json(json!({ "data": pets }))
+}
+
+async fn set_custom_pets_handler(
+    State(state): State<AppState>,
+    Json(body): Json<SetCustomPetsRequest>,
+) -> Json<serde_json::Value> {
+    let serialized = serde_json::to_string(&body.pets).unwrap_or_else(|_| "[]".to_string());
+    let _ = state.db.set_setting("pet_custom_list", &serialized);
+    Json(json!({ "ok": true, "data": body.pets }))
 }
 
 #[derive(Deserialize)]
@@ -898,7 +1077,10 @@ async fn create_pet_session_handler(
         .db
         .create_pet_session(&body.session_id, &body.title, &body.model)
     {
-        Ok(session) => Json(session).into_response(),
+        Ok(session) => {
+            let _ = state.db.prune_old_sessions();
+            Json(session).into_response()
+        }
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "detail": err.to_string() })),

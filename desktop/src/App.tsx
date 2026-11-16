@@ -1,59 +1,49 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import {
   Activity,
-  Check,
-  Copy,
-  Edit2,
   ExternalLink,
   KeyRound,
   MessageSquare,
-  Play,
-  Plus,
   RefreshCw,
-  Send,
+  ScrollText,
+  Settings,
   PawPrint,
-  Trash2,
   Users,
   X,
 } from "lucide-react";
 
 import { AppFrame } from "@/components/app-frame";
-import {
-  CopyMessageButton,
-  MarkdownMessage,
-  ThinkingIndicator,
-} from "@/components/markdown-message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { apiUrl, openApiDocs } from "@/lib/api";
+import { petBridge } from "@/hooks/use-pet-bridge";
+import { useSelectedPet } from "@/hooks/use-selected-pet";
+import { KeysTab, type ApiKeyItem } from "@/components/tabs/keys-tab";
+import { LogsTab, type GatewayRequestLog } from "@/components/tabs/logs-tab";
+import { PetStoreTab } from "@/components/tabs/pet-store-tab";
 import {
-  PET_CATALOG,
-  PET_STORAGE_KEY,
-  PetSprite,
-  getSavedPetId,
-  type PetId,
-  type PetStatus,
-} from "@/components/pet-sprite";
+  PlaygroundTab,
+  PROVIDER_MODELS,
+  type ProviderType,
+} from "@/components/tabs/playground-tab";
+import {
+  ProfilesTab,
+  PROVIDER_LABELS,
+  type Profile,
+} from "@/components/tabs/profiles-tab";
+import { SettingsTab } from "@/components/tabs/settings-tab";
+import { PET_CATALOG, type PetStatus } from "@/components/pet-sprite";
 
-type ProviderType = "deepseek" | "gemini" | "metaai";
-type NavTab = "profiles" | "keys" | "playground" | "pets";
+type NavTab = "profiles" | "keys" | "playground" | "logs" | "pets" | "settings";
 
 interface HealthStatus {
   status: string;
@@ -63,50 +53,12 @@ interface HealthStatus {
   metaai_active_profiles: number;
 }
 
-interface Profile {
-  id: string;
-  type: ProviderType;
-  name: string;
-  token?: string | null;
-  cookie?: string | null;
-  is_active: boolean;
-  total_requests: number;
-  created_at: string;
-  updated_at: string;
-}
-
-interface ApiKeyItem {
-  key: string;
-  name: string;
-  is_active: boolean;
-  created_at: string;
-  last_used: string;
-}
-
 interface TestResult {
   status: "ok" | "error";
   latencyMs: number;
   content: string;
   rawJson?: unknown;
 }
-
-const PROVIDER_MODELS: Record<ProviderType, string[]> = {
-  deepseek: ["deepseek-chat", "deepseek-reasoner"],
-  gemini: ["gemini-3-flash", "gemini-3-pro", "gemini-3-flash-thinking"],
-  metaai: ["meta-ai", "llama-3.3-70b", "meta-imagine"],
-};
-
-const PROVIDER_LABELS: Record<ProviderType, string> = {
-  deepseek: "DeepSeek",
-  gemini: "Gemini",
-  metaai: "Meta AI",
-};
-
-const PROVIDER_LOGOS: Record<ProviderType, string> = {
-  deepseek: "/providers/deepseek.svg",
-  gemini: "/providers/gemini.svg",
-  metaai: "/providers/metaai.svg",
-};
 
 function maskSecret(val?: string | null): string {
   if (!val) return "—";
@@ -119,7 +71,9 @@ export default function App() {
   const [providerFilter, setProviderFilter] = useState<"all" | ProviderType>("all");
 
   // Pet Store state
-  const [selectedPetId, setSelectedPetId] = useState<PetId>(() => getSavedPetId());
+  const { petId: selectedPetId, selectPet: handleSelectPet } = useSelectedPet({
+    syncFromServerOnMount: true,
+  });
   const [previewPetStatus, setPreviewPetStatus] = useState<PetStatus>("idle");
   const [appVersion, setAppVersion] = useState("0.1.1");
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
@@ -185,36 +139,46 @@ export default function App() {
         .catch(() => {});
     }, 2000);
 
-    fetch(apiUrl("/v1/pet/state"))
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (data?.selected_pet_id) {
-          setSelectedPetId(data.selected_pet_id as PetId);
-          localStorage.setItem(PET_STORAGE_KEY, data.selected_pet_id);
-        }
-      })
-      .catch(() => {});
-
     return () => window.clearTimeout(updateTimer);
   }, []);
 
-  const handleSelectPet = async (petId: PetId) => {
-    setSelectedPetId(petId);
-    localStorage.setItem(PET_STORAGE_KEY, petId);
-    try {
-      await fetch(apiUrl("/v1/pet/selected"), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pet_id: petId }),
+  const petHomeRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const syncHomeOffset = () => {
+      const rect = petHomeRef.current?.getBoundingClientRect();
+      if (rect && rect.width > 0 && rect.height > 0) {
+        void petBridge.setPetHomeOffset({
+          offsetX: rect.left + rect.width / 2,
+          offsetY: rect.top + rect.height / 2,
+          width: rect.width,
+          height: rect.height,
+        });
+      }
+    };
+    syncHomeOffset();
+    const el = petHomeRef.current;
+    const ro = el ? new ResizeObserver(syncHomeOffset) : null;
+    if (el && ro) ro.observe(el);
+    window.addEventListener("resize", syncHomeOffset);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", syncHomeOffset);
+    };
+  }, []);
+
+  const summonPetToHome = () => {
+    const rect = petHomeRef.current?.getBoundingClientRect();
+    if (rect && rect.width > 0 && rect.height > 0) {
+      void petBridge.summonPet({
+        offsetX: rect.left + rect.width / 2,
+        offsetY: rect.top + rect.height / 2,
+        width: rect.width,
+        height: rect.height,
       });
-    } catch {
-      // Ignore if backend unreachable
+      return;
     }
-    try {
-      await emit("pet:select", { petId });
-    } catch {
-      // Ignore outside Tauri
-    }
+    void petBridge.summonPet();
   };
 
   const [health, setHealth] = useState<HealthStatus | null>(null);
@@ -241,6 +205,59 @@ export default function App() {
   const [newKeyName, setNewKeyName] = useState("");
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
+
+  // Live Gateway Logs & Pet Traffic Reaction
+  const [gatewayLogs, setGatewayLogs] = useState<GatewayRequestLog[]>([]);
+  const [logFilter, setLogFilter] = useState<"all" | "ok" | "error">("all");
+  const [petReactTraffic, setPetReactTraffic] = useState(true);
+
+  useEffect(() => {
+    fetch(apiUrl("/v1/gateway/logs"))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((res) => {
+        if (Array.isArray(res?.data)) {
+          setGatewayLogs(res.data as GatewayRequestLog[]);
+        }
+      })
+      .catch(() => {});
+
+    fetch(apiUrl("/v1/pet/react-traffic"))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((res) => {
+        if (typeof res?.enabled === "boolean") {
+          setPetReactTraffic(res.enabled);
+        }
+      })
+      .catch(() => {});
+
+    let unlisten: (() => void) | undefined;
+    listen<GatewayRequestLog>("gateway:request", (event) => {
+      if (!event.payload) return;
+      setGatewayLogs((prev) => [event.payload, ...prev].slice(0, 100));
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  const handleClearGatewayLogs = async () => {
+    setGatewayLogs([]);
+    await fetch(apiUrl("/v1/gateway/logs"), { method: "DELETE" }).catch(() => {});
+  };
+
+  const handleTogglePetReactTraffic = async (enabled: boolean) => {
+    setPetReactTraffic(enabled);
+    await fetch(apiUrl("/v1/pet/react-traffic"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }).catch(() => {});
+  };
 
   // Playground
   const [pgProvider, setPgProvider] = useState<ProviderType>("deepseek");
@@ -527,27 +544,15 @@ export default function App() {
   };
 
   const titlebarActions = (
-    <>
-      <Button
-        variant="ghost"
-        size="xs"
-        className="gap-1.5 px-2 text-[11px]"
-        onClick={() => void invoke("enter_pet_only_mode").catch(() => {})}
-        title="Hide main window and keep only Floating Pet"
-      >
-        <PawPrint className="h-4 w-4 text-primary" />
-        <span>Pet Only</span>
-      </Button>
-      <Button
-        variant="secondary"
-        size="xs"
-        className="gap-1 px-2 text-[11px]"
-        onClick={() => void openApiDocs()}
-      >
-        <span>API Docs</span>
-        <ExternalLink className="h-3 w-3" />
-      </Button>
-    </>
+    <Button
+      variant="secondary"
+      size="xs"
+      className="gap-1 px-2 text-[11px]"
+      onClick={() => void openApiDocs()}
+    >
+      <span>API Docs</span>
+      <ExternalLink className="h-3 w-3" />
+    </Button>
   );
 
   return (
@@ -576,15 +581,20 @@ export default function App() {
               onClick={() => setActiveTab("profiles")}
               className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-xs font-medium transition-colors ${
                 activeTab === "profiles"
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  ? "bg-primary/15 font-semibold text-primary"
                   : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
               }`}
             >
               <span className="flex items-center gap-2">
-                <Users className="h-3.5 w-3.5" />
+                <Users className={`h-3.5 w-3.5 ${activeTab === "profiles" ? "text-primary" : ""}`} />
                 Profiles
               </span>
-              <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+              <Badge
+                variant="secondary"
+                className={`h-4 px-1.5 text-[10px] ${
+                  activeTab === "profiles" ? "bg-primary/20 text-primary" : ""
+                }`}
+              >
                 {profiles.length}
               </Badge>
             </button>
@@ -594,15 +604,20 @@ export default function App() {
               onClick={() => setActiveTab("keys")}
               className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-xs font-medium transition-colors ${
                 activeTab === "keys"
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  ? "bg-primary/15 font-semibold text-primary"
                   : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
               }`}
             >
               <span className="flex items-center gap-2">
-                <KeyRound className="h-3.5 w-3.5" />
+                <KeyRound className={`h-3.5 w-3.5 ${activeTab === "keys" ? "text-primary" : ""}`} />
                 API Keys
               </span>
-              <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+              <Badge
+                variant="secondary"
+                className={`h-4 px-1.5 text-[10px] ${
+                  activeTab === "keys" ? "bg-primary/20 text-primary" : ""
+                }`}
+              >
                 {keys.length}
               </Badge>
             </button>
@@ -612,12 +627,37 @@ export default function App() {
               onClick={() => setActiveTab("playground")}
               className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-xs font-medium transition-colors ${
                 activeTab === "playground"
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  ? "bg-primary/15 font-semibold text-primary"
                   : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
               }`}
             >
-              <MessageSquare className="h-3.5 w-3.5" />
+              <MessageSquare
+                className={`h-3.5 w-3.5 ${activeTab === "playground" ? "text-primary" : ""}`}
+              />
               Playground
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("logs")}
+              className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-xs font-medium transition-colors ${
+                activeTab === "logs"
+                  ? "bg-primary/15 font-semibold text-primary"
+                  : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <ScrollText className={`h-3.5 w-3.5 ${activeTab === "logs" ? "text-primary" : ""}`} />
+                Logs
+              </span>
+              <Badge
+                variant="secondary"
+                className={`h-4 px-1.5 text-[10px] ${
+                  activeTab === "logs" ? "bg-primary/20 text-primary" : ""
+                }`}
+              >
+                {gatewayLogs.length}
+              </Badge>
             </button>
 
             <button
@@ -625,22 +665,53 @@ export default function App() {
               onClick={() => setActiveTab("pets")}
               className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-xs font-medium transition-colors ${
                 activeTab === "pets"
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  ? "bg-primary/15 font-semibold text-primary"
                   : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
               }`}
             >
               <span className="flex items-center gap-2">
-                <PawPrint className="h-4 w-4" />
+                <PawPrint className={`h-4 w-4 ${activeTab === "pets" ? "text-primary" : ""}`} />
                 Pet Store
               </span>
-              <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+              <Badge
+                variant="secondary"
+                className={`h-4 px-1.5 text-[10px] ${
+                  activeTab === "pets" ? "bg-primary/20 text-primary" : ""
+                }`}
+              >
                 {PET_CATALOG.length}
               </Badge>
             </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab("settings")}
+              className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-xs font-medium transition-colors ${
+                activeTab === "settings"
+                  ? "bg-primary/15 font-semibold text-primary"
+                  : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+              }`}
+            >
+              <Settings className={`h-3.5 w-3.5 ${activeTab === "settings" ? "text-primary" : ""}`} />
+              Settings
+            </button>
           </nav>
 
+          {/* Pet Home Spot: Empty slot for the floating pet to return to */}
+          <button
+            ref={petHomeRef}
+            type="button"
+            onClick={summonPetToHome}
+            title="Click to call Pet back into this spot"
+            className="mt-auto mb-2 flex h-24 w-full cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-border/70 bg-background/40 px-2 text-center transition-colors hover:border-primary/60 hover:bg-primary/5"
+          >
+            <PawPrint className="h-4 w-4 text-muted-foreground/50" />
+            <span className="text-[11px] font-medium text-muted-foreground/80">Pet Home</span>
+            <span className="text-[10px] text-muted-foreground/55">Click để gọi pet về đây</span>
+          </button>
+
           {/* Gateway Status Footer */}
-          <div className="mt-auto rounded-lg border border-border bg-card p-3 text-xs">
+          <div className="rounded-lg border border-border bg-card p-3 text-xs">
             <div className="mb-2 flex items-center justify-between">
               <span className="flex items-center gap-1.5 font-medium text-foreground">
                 <Activity className="h-3.5 w-3.5 text-primary" />
@@ -712,474 +783,95 @@ export default function App() {
         {/* Main Workspace */}
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden p-6">
           {activeTab === "profiles" && (
-            <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col gap-4">
-              <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h1 className="text-lg font-semibold tracking-tight">Provider Profiles</h1>
-                  <p className="text-xs text-muted-foreground">
-                    Manage DeepSeek tokens, Gemini &amp; Meta AI cookies for Round-Robin load balancing.
-                  </p>
-                </div>
-                <Button size="sm" onClick={openCreateModal} className="gap-1.5">
-                  <Plus className="h-3.5 w-3.5" />
-                  Add Profile
-                </Button>
-              </div>
-
-              <div className="flex shrink-0 items-center gap-1.5">
-                {(["all", "deepseek", "gemini", "metaai"] as const).map((tab) => (
-                  <button
-                    key={tab}
-                    type="button"
-                    onClick={() => setProviderFilter(tab)}
-                    className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                      providerFilter === tab
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-secondary text-secondary-foreground hover:bg-accent"
-                    }`}
-                  >
-                    {tab !== "all" && (
-                      <img
-                        src={PROVIDER_LOGOS[tab]}
-                        alt={PROVIDER_LABELS[tab]}
-                        className="h-3.5 w-3.5 shrink-0"
-                      />
-                    )}
-                    {tab === "all" ? "All" : PROVIDER_LABELS[tab]}
-                  </button>
-                ))}
-              </div>
-
-              <Card className="min-h-0 flex-1 overflow-hidden py-0">
-                <CardContent className="h-full p-0">
-                  <Table containerClassName="h-full overflow-auto">
-                    <TableHeader className="sticky top-0 z-10 bg-card shadow-[inset_0_-1px_0_var(--border)] [&_tr]:border-b-0">
-                      <TableRow>
-                        <TableHead>Name</TableHead>
-                        <TableHead>Provider</TableHead>
-                        <TableHead>Credential</TableHead>
-                        <TableHead>Requests</TableHead>
-                        <TableHead>Active</TableHead>
-                        <TableHead className="text-right">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {filteredProfiles.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={6} className="py-10 text-center text-xs text-muted-foreground">
-                            No profiles yet. Click &ldquo;Add Profile&rdquo; to add credentials.
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        filteredProfiles.map((p) => (
-                          <TableRow key={p.id}>
-                            <TableCell className="font-medium text-xs">{p.name}</TableCell>
-                            <TableCell>
-                              <Badge variant="outline" className="gap-1.5 text-[11px]">
-                                {PROVIDER_LOGOS[p.type] && (
-                                  <img
-                                    src={PROVIDER_LOGOS[p.type]}
-                                    alt={PROVIDER_LABELS[p.type] ?? p.type}
-                                    className="h-3.5 w-3.5 shrink-0"
-                                  />
-                                )}
-                                {PROVIDER_LABELS[p.type] ?? p.type}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="font-mono text-[11px] text-muted-foreground">
-                              {maskSecret(p.type === "deepseek" ? p.token : p.cookie)}
-                            </TableCell>
-                            <TableCell className="font-mono text-xs">{p.total_requests}</TableCell>
-                            <TableCell>
-                              <Switch
-                                size="sm"
-                                checked={p.is_active}
-                                onCheckedChange={() => void handleToggleActive(p)}
-                              />
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <div className="inline-flex items-center gap-1">
-                                <Button
-                                  variant="ghost"
-                                  size="icon-xs"
-                                  title="Test Profile"
-                                  onClick={() => openTestModal(p)}
-                                >
-                                  <Play className="h-3.5 w-3.5 text-primary" />
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="icon-xs"
-                                  title="Edit"
-                                  onClick={() => openEditModal(p)}
-                                >
-                                  <Edit2 className="h-3.5 w-3.5" />
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="icon-xs"
-                                  title="Delete"
-                                  onClick={() => void handleDeleteProfile(p)}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      )}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            </div>
+            <ProfilesTab
+              profiles={filteredProfiles}
+              providerFilter={providerFilter}
+              onProviderFilterChange={setProviderFilter}
+              onAddProfile={openCreateModal}
+              onToggleActive={(p) => void handleToggleActive(p)}
+              onTestProfile={openTestModal}
+              onEditProfile={openEditModal}
+              onDeleteProfile={(p) => void handleDeleteProfile(p)}
+              maskSecret={maskSecret}
+            />
           )}
 
           {activeTab === "keys" && (
-            <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col gap-4">
-              <div className="shrink-0">
-                <h1 className="text-lg font-semibold tracking-tight">API Keys</h1>
-                <p className="text-xs text-muted-foreground">
-                  Generate Bearer tokens for external clients calling <code>http://127.0.0.1:8088</code>.
-                </p>
-              </div>
-
-              <Card className="shrink-0">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm">Create New Key</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <form onSubmit={handleCreateKey} className="flex gap-2">
-                    <Input
-                      placeholder="Friendly key name (e.g. cursor-local)"
-                      value={newKeyName}
-                      onChange={(e) => setNewKeyName(e.target.value)}
-                      className="h-8 text-xs"
-                    />
-                    <Button type="submit" size="sm" className="shrink-0 gap-1.5">
-                      <Plus className="h-3.5 w-3.5" />
-                      Generate
-                    </Button>
-                  </form>
-
-                  {createdKey && (
-                    <div className="mt-3 flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs">
-                      <code className="truncate font-mono text-foreground">{createdKey}</code>
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        className="shrink-0 gap-1"
-                        onClick={() => void copyText(createdKey)}
-                      >
-                        {copiedKey ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                        {copiedKey ? "Copied" : "Copy"}
-                      </Button>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              <Card className="min-h-0 flex-1 overflow-hidden py-0">
-                <CardContent className="h-full p-0">
-                  <Table containerClassName="h-full overflow-auto">
-                    <TableHeader className="sticky top-0 z-10 bg-card shadow-[inset_0_-1px_0_var(--border)] [&_tr]:border-b-0">
-                      <TableRow>
-                        <TableHead>Name</TableHead>
-                        <TableHead>Key</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Created</TableHead>
-                        <TableHead className="text-right">Action</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {keys.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={5} className="py-8 text-center text-xs text-muted-foreground">
-                            No API keys created yet.
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        keys.map((k) => (
-                          <TableRow key={k.key}>
-                            <TableCell className="text-xs font-medium">{k.name}</TableCell>
-                            <TableCell className="font-mono text-[11px] text-muted-foreground">
-                              {maskSecret(k.key)}
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant={k.is_active ? "default" : "secondary"} className="text-[10px]">
-                                {k.is_active ? "Active" : "Revoked"}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-[11px] text-muted-foreground">
-                              {k.created_at.slice(0, 19).replace("T", " ")}
-                            </TableCell>
-                            <TableCell className="text-right">
-                              <Button
-                                variant="ghost"
-                                size="icon-xs"
-                                onClick={() => void handleDeleteKey(k.key)}
-                              >
-                                <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                              </Button>
-                            </TableCell>
-                          </TableRow>
-                        ))
-                      )}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            </div>
+            <KeysTab
+              keys={keys}
+              newKeyName={newKeyName}
+              onNewKeyNameChange={setNewKeyName}
+              onCreateKey={handleCreateKey}
+              createdKey={createdKey}
+              copiedKey={copiedKey}
+              onCopyKey={(text) => void copyText(text)}
+              onDeleteKey={(key) => void handleDeleteKey(key)}
+              maskSecret={maskSecret}
+            />
           )}
 
           {activeTab === "playground" && (
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <div className="mx-auto max-w-4xl space-y-5">
-              <div>
-                <h1 className="text-lg font-semibold tracking-tight">API Playground</h1>
-                <p className="text-xs text-muted-foreground">
-                  Test OpenAI-compatible completions directly against the Rust gateway.
-                </p>
-              </div>
-
-              <Card>
-                <CardContent className="space-y-4 pt-5">
-                  <form onSubmit={runPlayground} className="space-y-3">
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                      <div>
-                        <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
-                          Provider
-                        </label>
-                        <select
-                          value={pgProvider}
-                          onChange={(e) => {
-                            const next = e.target.value as ProviderType;
-                            setPgProvider(next);
-                            setPgModel(PROVIDER_MODELS[next][0]);
-                          }}
-                          className="h-8 w-full rounded-md border border-border bg-input px-2.5 text-xs text-foreground outline-none"
-                        >
-                          <option value="deepseek">DeepSeek</option>
-                          <option value="gemini" disabled className="text-muted-foreground/45">
-                            Gemini (Coming soon)
-                          </option>
-                          <option value="metaai" disabled className="text-muted-foreground/45">
-                            Meta AI (Coming soon)
-                          </option>
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
-                          Model
-                        </label>
-                        <select
-                          value={pgModel}
-                          onChange={(e) => setPgModel(e.target.value)}
-                          className="h-8 w-full rounded-md border border-border bg-input px-2.5 text-xs text-foreground outline-none"
-                        >
-                          {PROVIDER_MODELS[pgProvider].map((m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="mb-1 block text-[11px] font-medium text-muted-foreground">
-                          X-Session-Id (optional)
-                        </label>
-                        <Input
-                          value={pgSessionId}
-                          onChange={(e) => setPgSessionId(e.target.value)}
-                          placeholder="Auto-assigned on first turn"
-                          className="h-8 font-mono text-xs"
-                        />
-                      </div>
-                    </div>
-
-                    <Textarea
-                      rows={3}
-                      placeholder="Enter a prompt..."
-                      value={pgPrompt}
-                      onChange={(e) => setPgPrompt(e.target.value)}
-                      className="text-xs"
-                    />
-
-                    <div className="flex items-center justify-between">
-                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Switch checked={pgStream} onCheckedChange={setPgStream} />
-                        <span>SSE Streaming</span>
-                      </label>
-                      <Button type="submit" size="sm" disabled={pgRunning} className="gap-1.5">
-                        <Send className="h-3.5 w-3.5" />
-                        {pgRunning ? "Generating..." : "Send Request"}
-                      </Button>
-                    </div>
-                  </form>
-
-                  {pgError && (
-                    <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
-                      {pgError}
-                    </div>
-                  )}
-
-                  {pgReasoning && (
-                    <div className="rounded-md border border-border bg-secondary/50 p-3">
-                      <div className="mb-1 text-[11px] font-semibold text-muted-foreground">
-                        Reasoning
-                      </div>
-                      <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">
-                        {pgReasoning}
-                      </pre>
-                    </div>
-                  )}
-
-                  {(pgOutput || pgRunning) && (
-                    <div className="rounded-md border border-border bg-input p-3">
-                      <div className="mb-1.5 flex items-center justify-between">
-                        <span className="text-[11px] font-semibold text-primary">Response</span>
-                        {!pgRunning && pgOutput && <CopyMessageButton text={pgOutput} />}
-                      </div>
-                      {pgOutput ? (
-                        <MarkdownMessage
-                          content={pgOutput}
-                          isStreaming={pgRunning}
-                          className="text-xs text-foreground"
-                        />
-                      ) : (
-                        <ThinkingIndicator
-                          label={pgReasoning ? "Thinking..." : "Waiting for response..."}
-                        />
-                      )}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-              </div>
-            </div>
+            <PlaygroundTab
+              provider={pgProvider}
+              onProviderChange={setPgProvider}
+              model={pgModel}
+              onModelChange={setPgModel}
+              activeProfiles={{
+                deepseek: health?.deepseek_active_profiles ?? 0,
+                gemini: health?.gemini_active_profiles ?? 0,
+                metaai: health?.metaai_active_profiles ?? 0,
+              }}
+              sessionId={pgSessionId}
+              onSessionIdChange={setPgSessionId}
+              prompt={pgPrompt}
+              onPromptChange={setPgPrompt}
+              stream={pgStream}
+              onStreamChange={setPgStream}
+              running={pgRunning}
+              output={pgOutput}
+              reasoning={pgReasoning}
+              error={pgError}
+              onSubmit={runPlayground}
+            />
           )}
 
-          {/* PET STORE TAB */}
-          {activeTab === "pets" && (
-            <div className="flex h-full min-h-0 flex-col gap-4">
-              <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-base font-semibold tracking-tight">Pet Store</h2>
-                  <p className="text-xs text-muted-foreground">
-                    Choose your floating desktop pet companion.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-card p-0.5 text-[11px]">
-                    {(
-                      [
-                        "idle",
-                        "happy",
-                        "wink",
-                        "shy",
-                        "annoyed",
-                        "typing",
-                        "thinking",
-                        "waiting",
-                        "streaming",
-                        "done",
-                        "error",
-                      ] as PetStatus[]
-                    ).map((st) => (
-                      <button
-                        key={st}
-                        type="button"
-                        onClick={() => setPreviewPetStatus(st)}
-                        className={`rounded px-2 py-1 capitalize transition-colors ${
-                          previewPetStatus === st
-                            ? "bg-primary text-primary-foreground"
-                            : "text-muted-foreground hover:text-foreground"
-                        }`}
-                      >
-                        {st}
-                      </button>
-                    ))}
-                  </div>
-                  <Button
-                    variant="default"
-                    size="sm"
-                    className="h-7 gap-1.5 text-xs"
-                    onClick={() => void invoke("summon_pet_window").catch(() => {})}
-                  >
-                    <PawPrint className="h-4 w-4" />
-                    Bring Pet Here
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 gap-1.5 text-xs"
-                    onClick={() => void invoke("toggle_pet_window").catch(() => {})}
-                  >
-                    Show / Hide Pet
-                  </Button>
-                </div>
-              </div>
+          {activeTab === "logs" && (
+            <LogsTab
+              logs={gatewayLogs}
+              filter={logFilter}
+              onFilterChange={setLogFilter}
+              onClear={() => void handleClearGatewayLogs()}
+            />
+          )}
 
-              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {PET_CATALOG.map((pet) => {
-                    const isEquipped = selectedPetId === pet.id;
-                    return (
-                      <Card
-                        key={pet.id}
-                        className={`flex flex-col justify-between transition-colors ${
-                          isEquipped ? "border-primary/70 bg-primary/5" : "hover:border-border/80"
-                        }`}
-                      >
-                        <CardHeader className="pb-2">
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <CardTitle className="text-sm">{pet.name}</CardTitle>
-                              <CardDescription className="text-[11px]">{pet.badge}</CardDescription>
-                            </div>
-                            {isEquipped && (
-                              <Badge variant="default" className="h-5 gap-1 px-1.5 text-[10px]">
-                                <Check className="h-3 w-3" />
-                                Equipped
-                              </Badge>
-                            )}
-                          </div>
-                        </CardHeader>
-                        <CardContent className="flex flex-col items-center gap-3 pt-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void handleSelectPet(pet.id);
-                              void invoke("summon_pet_window").catch(() => {});
-                            }}
-                            title="Click to equip & summon pet to app window"
-                            className="flex h-28 w-full cursor-pointer items-center justify-center rounded-lg border border-border/60 bg-secondary/40 transition-colors hover:border-primary/60 hover:bg-secondary/70"
-                          >
-                            <PetSprite petId={pet.id} status={previewPetStatus} size="lg" />
-                          </button>
-                          <p className="text-center text-xs text-muted-foreground">
-                            {pet.tagline}
-                          </p>
-                          <Button
-                            size="sm"
-                            variant={isEquipped ? "secondary" : "default"}
-                            className="h-7 w-full text-xs"
-                            onClick={() => {
-                              void handleSelectPet(pet.id);
-                              void invoke("summon_pet_window").catch(() => {});
-                            }}
-                          >
-                            {isEquipped ? "Equipped · Bring Here" : "Equip & Summon"}
-                          </Button>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
+          {activeTab === "pets" && (
+            <PetStoreTab
+              selectedPetId={selectedPetId}
+              previewPetStatus={previewPetStatus}
+              onPreviewStatusChange={setPreviewPetStatus}
+              onSelectPet={(id) => void handleSelectPet(id)}
+              onSummonPet={summonPetToHome}
+              onTogglePetWindow={() => void petBridge.togglePetWindow()}
+              petReactTraffic={petReactTraffic}
+              onToggleReactTraffic={(v) => void handleTogglePetReactTraffic(v)}
+            />
+          )}
+
+          {activeTab === "settings" && (
+            <SettingsTab
+              petReactTraffic={petReactTraffic}
+              onToggleReactTraffic={(v) => void handleTogglePetReactTraffic(v)}
+              onLogsPruned={() => {
+                fetch(apiUrl("/v1/gateway/logs"))
+                  .then((r) => (r.ok ? r.json() : null))
+                  .then((res) => {
+                    if (Array.isArray(res?.data)) {
+                      setGatewayLogs(res.data as GatewayRequestLog[]);
+                    }
+                  })
+                  .catch(() => {});
+              }}
+            />
           )}
         </main>
       </div>

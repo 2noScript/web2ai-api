@@ -84,6 +84,19 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    gateway_logs (id) {
+        id -> Text,
+        timestamp -> Text,
+        endpoint -> Text,
+        model -> Text,
+        status_code -> Integer,
+        latency_ms -> BigInt,
+        stream -> Integer,
+        error -> Nullable<Text>,
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DbError {
     #[error("sqlite connection error: {0}")]
@@ -301,6 +314,18 @@ impl Database {
                 FOREIGN KEY(session_id) REFERENCES pet_sessions(session_id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_pet_messages_session_id ON pet_messages(session_id, id);
+
+            CREATE TABLE IF NOT EXISTS gateway_logs (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                endpoint TEXT NOT NULL,
+                model TEXT NOT NULL,
+                status_code INTEGER NOT NULL,
+                latency_ms INTEGER NOT NULL,
+                stream INTEGER NOT NULL DEFAULT 0,
+                error TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_gateway_logs_timestamp ON gateway_logs(timestamp DESC);
             ",
         )?;
 
@@ -711,9 +736,18 @@ impl Database {
             Vec::new()
         };
 
+        let docked = system_settings::table
+            .find("pet_docked")
+            .select(system_settings::value)
+            .first::<String>(&mut *conn)
+            .optional()?
+            .as_deref()
+            == Some("true");
+
         Ok(PetState {
             selected_pet_id,
             pet_api_key,
+            docked,
             active_session_id,
             sessions,
             messages,
@@ -926,6 +960,153 @@ impl Database {
             .execute(&mut *conn)?;
         Ok(updated > 0)
     }
+
+    pub fn get_cache_settings(&self) -> Result<CacheSettings, DbError> {
+        let max_sessions = self
+            .get_setting("cache_max_sessions")?
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(50)
+            .clamp(5, 5000);
+        let max_logs = self
+            .get_setting("cache_max_logs")?
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(200)
+            .clamp(10, 5000);
+        Ok(CacheSettings {
+            max_sessions,
+            max_logs,
+        })
+    }
+
+    pub fn set_cache_settings(
+        &self,
+        max_sessions: i64,
+        max_logs: i64,
+    ) -> Result<CacheSettings, DbError> {
+        let clamped_sessions = max_sessions.clamp(5, 5000);
+        let clamped_logs = max_logs.clamp(10, 5000);
+        self.set_setting("cache_max_sessions", &clamped_sessions.to_string())?;
+        self.set_setting("cache_max_logs", &clamped_logs.to_string())?;
+
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        Self::prune_sessions_locked(&mut conn, clamped_sessions)?;
+        Self::prune_logs_locked(&mut conn, clamped_logs)?;
+        Ok(CacheSettings {
+            max_sessions: clamped_sessions,
+            max_logs: clamped_logs,
+        })
+    }
+
+    pub fn get_cache_stats(&self) -> Result<CacheStats, DbError> {
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        let api_sessions_count: i64 = sessions::table.count().get_result(&mut *conn)?;
+        let pet_sessions_count: i64 = pet_sessions::table.count().get_result(&mut *conn)?;
+        let logs_count: i64 = gateway_logs::table.count().get_result(&mut *conn)?;
+        Ok(CacheStats {
+            api_sessions_count,
+            pet_sessions_count,
+            logs_count,
+        })
+    }
+
+    pub fn insert_gateway_log(&self, entry: &GatewayLogEntry) -> Result<(), DbError> {
+        let max_logs = self
+            .get_setting("cache_max_logs")?
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(200)
+            .clamp(10, 5000);
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        diesel::insert_into(gateway_logs::table)
+            .values(&NewGatewayLogRow {
+                id: &entry.id,
+                timestamp: &entry.timestamp,
+                endpoint: &entry.endpoint,
+                model: &entry.model,
+                status_code: entry.status_code as i32,
+                latency_ms: entry.latency_ms as i64,
+                stream: if entry.stream { 1 } else { 0 },
+                error: entry.error.as_deref(),
+            })
+            .execute(&mut *conn)?;
+        Self::prune_logs_locked(&mut conn, max_logs)?;
+        Ok(())
+    }
+
+    pub fn list_gateway_logs(&self, limit: i64) -> Result<Vec<GatewayLogEntry>, DbError> {
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        let rows = gateway_logs::table
+            .order(gateway_logs::timestamp.desc())
+            .limit(limit.clamp(1, 5000))
+            .select(GatewayLogRow::as_select())
+            .load::<GatewayLogRow>(&mut *conn)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| GatewayLogEntry {
+                id: r.id,
+                timestamp: r.timestamp,
+                endpoint: r.endpoint,
+                model: r.model,
+                status_code: r.status_code as u16,
+                latency_ms: r.latency_ms.max(0) as u64,
+                stream: r.stream != 0,
+                error: r.error,
+            })
+            .collect())
+    }
+
+    pub fn clear_gateway_logs(&self) -> Result<(), DbError> {
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        diesel::delete(gateway_logs::table).execute(&mut *conn)?;
+        Ok(())
+    }
+
+    pub fn prune_old_sessions(&self) -> Result<(), DbError> {
+        let max_sessions = self
+            .get_setting("cache_max_sessions")?
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(50)
+            .clamp(5, 5000);
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        Self::prune_sessions_locked(&mut conn, max_sessions)
+    }
+
+    fn prune_logs_locked(conn: &mut SqliteConnection, max_logs: i64) -> Result<(), DbError> {
+        let excess_ids: Vec<String> = gateway_logs::table
+            .order(gateway_logs::timestamp.desc())
+            .offset(max_logs)
+            .select(gateway_logs::id)
+            .load::<String>(conn)?;
+        if !excess_ids.is_empty() {
+            diesel::delete(gateway_logs::table.filter(gateway_logs::id.eq_any(&excess_ids)))
+                .execute(conn)?;
+        }
+        Ok(())
+    }
+
+    fn prune_sessions_locked(conn: &mut SqliteConnection, max_sessions: i64) -> Result<(), DbError> {
+        let excess_api_sids: Vec<String> = sessions::table
+            .order(sessions::last_used.desc())
+            .offset(max_sessions)
+            .select(sessions::session_id)
+            .load::<String>(conn)?;
+        if !excess_api_sids.is_empty() {
+            diesel::delete(sessions::table.filter(sessions::session_id.eq_any(&excess_api_sids)))
+                .execute(conn)?;
+        }
+
+        let excess_pet_sids: Vec<String> = pet_sessions::table
+            .order(pet_sessions::updated_at.desc())
+            .offset(max_sessions)
+            .select(pet_sessions::session_id)
+            .load::<String>(conn)?;
+        if !excess_pet_sids.is_empty() {
+            diesel::delete(
+                pet_sessions::table.filter(pet_sessions::session_id.eq_any(&excess_pet_sids)),
+            )
+            .execute(conn)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Queryable, Selectable)]
@@ -971,7 +1152,59 @@ struct NewPetMessageRow<'a> {
 pub struct PetState {
     pub selected_pet_id: String,
     pub pet_api_key: String,
+    pub docked: bool,
     pub active_session_id: Option<String>,
     pub sessions: Vec<PetSession>,
     pub messages: Vec<PetMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayLogEntry {
+    pub id: String,
+    pub timestamp: String,
+    pub endpoint: String,
+    pub model: String,
+    pub status_code: u16,
+    pub latency_ms: u64,
+    pub stream: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = gateway_logs, check_for_backend(diesel::sqlite::Sqlite))]
+struct GatewayLogRow {
+    id: String,
+    timestamp: String,
+    endpoint: String,
+    model: String,
+    status_code: i32,
+    latency_ms: i64,
+    stream: i32,
+    error: Option<String>,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = gateway_logs, check_for_backend(diesel::sqlite::Sqlite))]
+struct NewGatewayLogRow<'a> {
+    id: &'a str,
+    timestamp: &'a str,
+    endpoint: &'a str,
+    model: &'a str,
+    status_code: i32,
+    latency_ms: i64,
+    stream: i32,
+    error: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheSettings {
+    pub max_sessions: i64,
+    pub max_logs: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheStats {
+    pub api_sessions_count: i64,
+    pub pet_sessions_count: i64,
+    pub logs_count: i64,
 }

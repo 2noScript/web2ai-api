@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   ArrowUp,
@@ -15,8 +13,11 @@ import {
   PanelLeft,
   Pencil,
   Plus,
+  Scissors,
+  Sparkles,
   SquarePen,
   Trash2,
+  Wrench,
   X,
 } from "lucide-react";
 
@@ -26,88 +27,36 @@ import {
   MarkdownMessage,
   ThinkingIndicator,
 } from "@/components/markdown-message";
+import { petBridge, usePetBridgeEvents } from "@/hooks/use-pet-bridge";
+import { resolvePetConfig, useCustomPets } from "@/hooks/use-custom-pets";
 import {
-  PET_STORAGE_KEY,
+  SESSION_STORAGE_KEY,
+  createSessionId,
+  decodePetMessageContent,
+  encodePetMessageContent,
+  usePetChatSession,
+  type ChatMessage,
+  type PetMessageRow,
+  type PetStateResponse,
+} from "@/hooks/use-pet-chat";
+import { useSelectedPet } from "@/hooks/use-selected-pet";
+import {
   PetSprite,
-  getSavedPetId,
-  type PetId,
   type PetStatus,
 } from "@/components/pet-sprite";
-
-interface ChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  reasoning?: string;
-  images?: string[];
-}
 
 interface ModelItem {
   id: string;
 }
 
-interface PetSessionSummary {
-  session_id: string;
-  title: string;
-  model: string;
-  created_at: string;
-  updated_at: string;
-}
-
-interface PetMessageRow {
-  id: number;
-  session_id: string;
-  role: string;
-  content: string;
-  created_at: string;
-}
-
-interface PetStateResponse {
-  selected_pet_id: PetId;
-  pet_api_key?: string;
-  active_session_id: string | null;
-  sessions: PetSessionSummary[];
-  messages: PetMessageRow[];
-}
-
 const PET_TINY_SIZE = new LogicalSize(280, 200);
 const PET_QUICK_SIZE = new LogicalSize(280, 250);
 const PET_EXPANDED_SIZE = new LogicalSize(560, 620);
-const SESSION_STORAGE_KEY = "web2ai_pet_session_id";
-
-function createSessionId(): string {
-  return `pet-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function encodePetMessageContent(text: string, images?: string[]): string {
-  if (images && images.length > 0) {
-    return JSON.stringify({ text, images });
-  }
-  return text;
-}
-
-function decodePetMessageContent(raw: string): { content: string; images?: string[] } {
-  if (raw.startsWith("{") && raw.endsWith("}")) {
-    try {
-      const parsed = JSON.parse(raw) as { text?: unknown; images?: unknown };
-      if (typeof parsed.text === "string" || Array.isArray(parsed.images)) {
-        const imgs = Array.isArray(parsed.images)
-          ? parsed.images.filter((v): v is string => typeof v === "string" && v.length > 0)
-          : undefined;
-        return {
-          content: typeof parsed.text === "string" ? parsed.text : "",
-          images: imgs && imgs.length > 0 ? imgs : undefined,
-        };
-      }
-    } catch {
-      // Fallback to raw text
-    }
-  }
-  return { content: raw };
-}
 
 export function PetOverlay() {
-  const [petId, setPetId] = useState<PetId>(() => getSavedPetId());
+  const { petId, setPetId } = useSelectedPet();
+  const { customPets } = useCustomPets();
+  const activePetConfig = resolvePetConfig(petId, customPets);
   const [expanded, setExpanded] = useState(false);
   const [status, setStatus] = useState<PetStatus>("idle");
   const [activeModelLabel, setActiveModelLabel] = useState<string>("deepseek:deepseek-chat");
@@ -120,95 +69,46 @@ export function PetOverlay() {
     "metaai:llama-3.3-70b",
   ]);
   const [selectedModel, setSelectedModel] = useState("deepseek:deepseek-chat");
-  const [sessionId, setSessionId] = useState<string>(() => {
-    const saved = localStorage.getItem(SESSION_STORAGE_KEY);
-    if (saved) return saved;
-    const fresh = createSessionId();
-    localStorage.setItem(SESSION_STORAGE_KEY, fresh);
-    return fresh;
+  const [activeProviders, setActiveProviders] = useState<Record<string, number>>({
+    deepseek: 1,
+    gemini: 0,
+    metaai: 0,
   });
-  const [sessions, setSessions] = useState<PetSessionSummary[]>([]);
+  const [atHome, setAtHome] = useState(false);
+  const {
+    sessionId,
+    setSessionId,
+    sessions,
+    setSessions,
+    messages,
+    setMessages,
+    petApiKey,
+    setPetApiKey,
+    persistPetMessage,
+    refreshPetState,
+  } = usePetChatSession({
+    onPetIdSync: setPetId,
+    onDockedSync: setAtHome,
+    onTitleSync: setLastTitle,
+    onModelSync: (m) => {
+      setSelectedModel(m);
+      setActiveModelLabel(m);
+    },
+  });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState<string>("");
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const attachMenuRef = useRef<HTMLDivElement | null>(null);
   const chatBoxRef = useRef<HTMLDivElement | null>(null);
   const petWalkerRef = useRef<HTMLButtonElement | null>(null);
   const [pawTrail, setPawTrail] = useState<Array<{ id: number; x: number; y: number }>>([]);
-  const [petApiKey, setPetApiKey] = useState<string>("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  const persistPetMessage = async (
-    sid: string,
-    titleIfNew: string,
-    model: string,
-    role: "user" | "assistant",
-    content: string,
-  ) => {
-    try {
-      await fetch(apiUrl("/v1/pet/messages"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: sid,
-          title: titleIfNew,
-          model,
-          role,
-          content,
-        }),
-      });
-    } catch {
-      // Ignore persistence error
-    }
-  };
-
-  const refreshPetState = async () => {
-    try {
-      const res = await fetch(apiUrl("/v1/pet/state"));
-      if (!res.ok) return;
-      const data = (await res.json()) as PetStateResponse;
-      if (data.selected_pet_id) {
-        setPetId(data.selected_pet_id);
-        localStorage.setItem(PET_STORAGE_KEY, data.selected_pet_id);
-      }
-      if (data.pet_api_key) {
-        setPetApiKey(data.pet_api_key);
-      }
-      setSessions(data.sessions || []);
-      if (data.active_session_id) {
-        setSessionId(data.active_session_id);
-        localStorage.setItem(SESSION_STORAGE_KEY, data.active_session_id);
-        const activeSession = data.sessions.find((s) => s.session_id === data.active_session_id);
-        if (activeSession?.title) {
-          setLastTitle(activeSession.title);
-        }
-        if (activeSession?.model) {
-          setSelectedModel(activeSession.model);
-          setActiveModelLabel(activeSession.model);
-        }
-      }
-      if (Array.isArray(data.messages)) {
-        setMessages(
-          data.messages.map((m) => {
-            const decoded = decodePetMessageContent(m.content);
-            return {
-              id: `db-${m.id}`,
-              role: m.role === "user" ? "user" : "assistant",
-              content: decoded.content,
-              images: decoded.images,
-            };
-          }),
-        );
-      }
-    } catch {
-      // Ignore if server not ready
-    }
-  };
 
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -222,30 +122,74 @@ export function PetOverlay() {
   const pokeResetRef = useRef<number | null>(null);
   const [pokeMessage, setPokeMessage] = useState<string | null>(null);
   const [mainAppOpen, setMainAppOpen] = useState(true);
+  const [hoveredBtn, setHoveredBtn] = useState<"compose" | "chat" | "home" | null>(null);
   const [quickBarOpen, setQuickBarOpen] = useState(false);
+  const [personaEnabled, setPersonaEnabled] = useState(true);
+  const [dragOver, setDragOver] = useState(false);
   const [miniInput, setMiniInput] = useState("");
   const miniInputRef = useRef<HTMLInputElement | null>(null);
   const homePointerHandledRef = useRef(false);
 
   useEffect(() => {
-    invoke<boolean>("is_main_window_visible")
-      .then(setMainAppOpen)
-      .catch(() => {});
-    const unlisten = listen<boolean>("main_window_visibility", (event) => {
-      setMainAppOpen(event.payload);
-    });
+    void petBridge.isMainWindowVisible().then(setMainAppOpen);
+    const clearHover = () => setHoveredBtn(null);
+    window.addEventListener("blur", clearHover);
     return () => {
-      void unlisten.then((fn) => fn());
+      window.removeEventListener("blur", clearHover);
     };
   }, []);
 
+  usePetBridgeEvents({
+    onMainVisibility: setMainAppOpen,
+    onToggleQuickBar: () => {
+      if (expanded) {
+        window.requestAnimationFrame(() => inputRef.current?.focus());
+        return;
+      }
+      setAtHome(false);
+      setQuickBarOpen(true);
+      try {
+        void getCurrentWebviewWindow().setSize(PET_QUICK_SIZE);
+      } catch {
+        // ignore
+      }
+      window.requestAnimationFrame(() => miniInputRef.current?.focus());
+    },
+    onDocked: (docked) => {
+      setAtHome(docked);
+      if (docked) {
+        setExpanded(false);
+        setQuickBarOpen(false);
+        setHoveredBtn(null);
+      }
+    },
+    onStatus: (payload) => {
+      const next = payload?.status;
+      if (!next) return;
+      if (payload?.model) {
+        setActiveModelLabel(payload.model);
+      }
+      if (resetTimerRef.current) {
+        window.clearTimeout(resetTimerRef.current);
+        resetTimerRef.current = null;
+      }
+      setStatus(next);
+      if (next === "done" || next === "error") {
+        resetTimerRef.current = window.setTimeout(() => {
+          setStatus("idle");
+        }, 2400);
+      }
+    },
+  });
+
   const handleToggleMainWindow = async () => {
+    setHoveredBtn(null);
     setMainAppOpen((prev) => !prev);
     try {
-      const visible = await invoke<boolean>("toggle_main_window");
+      const visible = await petBridge.toggleMainWindow();
       setMainAppOpen(visible);
     } catch {
-      await invoke("open_main_window").catch(() => {});
+      await petBridge.openMainWindow();
       setMainAppOpen(true);
     }
   };
@@ -260,6 +204,20 @@ export function PetOverlay() {
       behavior: sending ? "auto" : "smooth",
     });
   }, [messages, expanded, sending]);
+
+  useEffect(() => {
+    fetch(apiUrl("/health"))
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data) return;
+        setActiveProviders({
+          deepseek: Number(data.deepseek_active_profiles ?? 0),
+          gemini: Number(data.gemini_active_profiles ?? 0),
+          metaai: Number(data.metaai_active_profiles ?? 0),
+        });
+      })
+      .catch(() => {});
+  }, [modelMenuOpen, expanded]);
 
   useEffect(() => {
     fetch(apiUrl("/v1/models"))
@@ -284,48 +242,7 @@ export function PetOverlay() {
   }, []);
 
   useEffect(() => {
-    let unlistenStatus: (() => void) | undefined;
-    let unlistenSelect: (() => void) | undefined;
-    listen<{ status?: PetStatus; model?: string }>("pet:status", (event) => {
-      const next = event.payload?.status;
-      if (!next) return;
-      if (event.payload?.model) {
-        setActiveModelLabel(event.payload.model);
-      }
-      if (resetTimerRef.current) {
-        window.clearTimeout(resetTimerRef.current);
-        resetTimerRef.current = null;
-      }
-      setStatus(next);
-      if (next === "done" || next === "error") {
-        resetTimerRef.current = window.setTimeout(() => {
-          setStatus("idle");
-        }, 2400);
-      }
-    }).then((fn) => {
-      unlistenStatus = fn;
-    });
-
-    listen<{ petId?: PetId }>("pet:select", (event) => {
-      const nextPet = event.payload?.petId;
-      if (!nextPet) return;
-      setPetId(nextPet);
-      localStorage.setItem(PET_STORAGE_KEY, nextPet);
-    }).then((fn) => {
-      unlistenSelect = fn;
-    });
-
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === PET_STORAGE_KEY && e.newValue) {
-        setPetId(e.newValue as PetId);
-      }
-    };
-    window.addEventListener("storage", handleStorage);
-
     return () => {
-      unlistenStatus?.();
-      unlistenSelect?.();
-      window.removeEventListener("storage", handleStorage);
       if (resetTimerRef.current) {
         window.clearTimeout(resetTimerRef.current);
       }
@@ -342,14 +259,20 @@ export function PetOverlay() {
   }, []);
 
   useEffect(() => {
-    if (!modelMenuOpen) return;
+    if (!modelMenuOpen && !attachMenuOpen) return;
     const handleMouseDown = (e: MouseEvent) => {
-      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+      if (modelMenuOpen && modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
         setModelMenuOpen(false);
+      }
+      if (attachMenuOpen && attachMenuRef.current && !attachMenuRef.current.contains(e.target as Node)) {
+        setAttachMenuOpen(false);
       }
     };
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setModelMenuOpen(false);
+      if (e.key === "Escape") {
+        setModelMenuOpen(false);
+        setAttachMenuOpen(false);
+      }
     };
     document.addEventListener("mousedown", handleMouseDown);
     document.addEventListener("keydown", handleKeyDown);
@@ -357,7 +280,7 @@ export function PetOverlay() {
       document.removeEventListener("mousedown", handleMouseDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [modelMenuOpen]);
+  }, [modelMenuOpen, attachMenuOpen]);
 
   useEffect(() => {
     if (!expanded) {
@@ -520,22 +443,31 @@ export function PetOverlay() {
     const colonIdx = modelId.indexOf(":");
     const provider = colonIdx > 0 ? modelId.slice(0, colonIdx) : "deepseek";
     const name = colonIdx > 0 ? modelId.slice(colonIdx + 1) : modelId;
-    const isSupported = provider === "deepseek";
+    const providerSupported = provider === "deepseek";
+    const hasActiveProfile = (activeProviders[provider] ?? 0) > 0;
+    const isSupported = providerSupported && hasActiveProfile;
+    const disabledLabel = !providerSupported
+      ? "Soon"
+      : !hasActiveProfile
+        ? "No profile"
+        : null;
     const iconSrc =
       provider === "gemini"
         ? "/providers/gemini.svg"
         : provider === "metaai"
           ? "/providers/metaai.svg"
           : "/providers/deepseek.svg";
-    return { provider, name, isSupported, iconSrc };
+    return { provider, name, isSupported, disabledLabel, iconSrc };
   };
 
   const selectedModelMeta = parseModelMeta(selectedModel);
+  const hasAnyActiveProfile = models.some((m) => parseModelMeta(m).isSupported);
 
   const setWindowExpanded = (next: boolean) => {
     try {
       const win = getCurrentWebviewWindow();
       if (next) {
+        setAtHome(false);
         setExpanded(true);
         void win.setSize(PET_EXPANDED_SIZE);
         window.requestAnimationFrame(() => inputRef.current?.focus());
@@ -552,6 +484,9 @@ export function PetOverlay() {
   const toggleQuickBar = (e?: React.MouseEvent) => {
     e?.stopPropagation();
     const next = !quickBarOpen;
+    if (next) {
+      setAtHome(false);
+    }
     setQuickBarOpen(next);
     try {
       const win = getCurrentWebviewWindow();
@@ -587,7 +522,14 @@ export function PetOverlay() {
     const dy = e.clientY - origin.y;
     if (Math.hypot(dx, dy) > 4) {
       origin.dragged = true;
-      void getCurrentWebviewWindow().startDragging();
+      const win = getCurrentWebviewWindow();
+      if (atHome) {
+        setAtHome(false);
+        if (!expanded && !quickBarOpen) {
+          void win.setSize(PET_TINY_SIZE);
+        }
+      }
+      void win.startDragging();
     }
   };
 
@@ -764,10 +706,50 @@ export function PetOverlay() {
     }
   };
 
+  const handleDropFiles = async (files: FileList | File[]) => {
+    const all = Array.from(files);
+    const images = all.filter((f) => f.type.startsWith("image/"));
+    if (images.length > 0) {
+      appendImageFiles(images);
+    }
+    const textFiles = all.filter(
+      (f) =>
+        !f.type.startsWith("image/") &&
+        (/\.(txt|md|ts|tsx|js|jsx|rs|py|json|toml|yaml|yml|css|html|log|sh|sql)$/i.test(f.name) ||
+          f.type.startsWith("text/")),
+    );
+    if (textFiles.length > 0) {
+      const blocks: string[] = [];
+      for (const f of textFiles.slice(0, 3)) {
+        try {
+          const raw = await f.text();
+          const trimmed = raw.length > 8000 ? `${raw.slice(0, 8000)}\n... (truncated)` : raw;
+          const ext = f.name.split(".").pop() || "txt";
+          blocks.push(`File \`${f.name}\`:\n\`\`\`${ext}\n${trimmed}\n\`\`\``);
+        } catch {
+          // ignore unreadable file
+        }
+      }
+      if (blocks.length > 0) {
+        setInput((prev) => (prev.trim() ? `${prev.trim()}\n\n${blocks.join("\n\n")}` : blocks.join("\n\n")));
+        if (!expanded) setWindowExpanded(true);
+        window.requestAnimationFrame(() => inputRef.current?.focus());
+      }
+    }
+  };
+
+  const handleSnipScreen = async () => {
+    const dataUrl = await petBridge.captureScreenSnip();
+    if (!dataUrl) return;
+    setAttachedImages((prev) => (prev.length >= 4 ? prev : [...prev, dataUrl]));
+    if (!expanded) setWindowExpanded(true);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
   const handleSend = async (overridePrompt?: string) => {
     const prompt = (overridePrompt !== undefined ? overridePrompt : input).trim();
     const imagesToSend = attachedImages;
-    if ((!prompt && imagesToSend.length === 0) || sending) return;
+    if ((!prompt && imagesToSend.length === 0) || sending || !selectedModelMeta.isSupported) return;
 
     const displayPrompt = prompt || "[Image]";
     setLastTitle(displayPrompt.length > 34 ? `${displayPrompt.slice(0, 34)}...` : displayPrompt);
@@ -841,12 +823,20 @@ export function PetOverlay() {
               })),
             ]
           : prompt;
+      const outgoingMessages: Array<{ role: string; content: unknown }> = [];
+      if (personaEnabled && messages.length === 0) {
+        outgoingMessages.push({
+          role: "system",
+          content: activePetConfig.systemPrompt,
+        });
+      }
+      outgoingMessages.push({ role: "user", content: messageContent });
       const res = await fetch(apiUrl("/v1/chat/completions"), {
         method: "POST",
         headers,
         body: JSON.stringify({
           model: selectedModel,
-          messages: [{ role: "user", content: messageContent }],
+          messages: outgoingMessages,
           stream: true,
         }),
       });
@@ -994,48 +984,87 @@ export function PetOverlay() {
         className={
           expanded
             ? "absolute top-0 left-0 z-40 flex h-24 w-24 origin-center cursor-grab items-center justify-center bg-transparent outline-none will-change-transform active:cursor-grabbing"
-            : "relative z-30 -mb-2 flex shrink-0 cursor-grab items-center justify-center bg-transparent outline-none active:cursor-grabbing"
+            : atHome
+              ? "relative z-30 flex shrink-0 cursor-grab items-center justify-center bg-transparent outline-none active:cursor-grabbing"
+              : "relative z-30 -mb-2 flex shrink-0 cursor-grab items-center justify-center bg-transparent outline-none active:cursor-grabbing"
         }
       >
-        <PetSprite petId={petId} status={status} />
+        <PetSprite
+          petId={activePetConfig.uiSprite}
+          status={status}
+          customAvatarUrl={activePetConfig.customAvatarUrl}
+        />
+        {atHome && (status === "thinking" || status === "waiting" || status === "streaming" || status === "error") && (
+          <span
+            title={statusSubtitle}
+            className={`pointer-events-none absolute top-1 right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-bold shadow ${
+              status === "error"
+                ? "bg-destructive text-destructive-foreground"
+                : "animate-pulse bg-primary text-primary-foreground"
+            }`}
+          >
+            {status === "error" ? "!" : "•••"}
+          </span>
+        )}
       </button>
 
-      {/* Collapsed-only: Codex-style Frosted Pill Toolbar */}
-      {!expanded && (
-        <div className="relative z-20 flex shrink-0 items-center divide-x divide-white/10 rounded-full border border-white/15 bg-[#242424]/90 px-1 py-0.5 shadow-xl backdrop-blur-xl">
+      {/* Collapsed-only (hidden when docked at Pet Home): Codex-style Frosted Pill Toolbar */}
+      {!expanded && !atHome && (
+        <div
+          onPointerLeave={() => setHoveredBtn(null)}
+          className="relative z-20 flex shrink-0 items-center divide-x divide-white/10 rounded-full border border-white/15 bg-[#242424]/90 px-1 py-0.5 shadow-xl backdrop-blur-xl"
+        >
           <button
             type="button"
-            onClick={handleComposeClick}
+            onPointerEnter={() => setHoveredBtn("compose")}
+            onPointerLeave={() => setHoveredBtn((cur) => (cur === "compose" ? null : cur))}
+            onClick={(e) => {
+              setHoveredBtn(null);
+              handleComposeClick(e);
+            }}
             title="New Chat"
-            className="flex h-7 w-9 items-center justify-center rounded-l-full text-foreground/85 transition-colors hover:bg-white/10 hover:text-foreground"
+            className={`flex h-7 w-9 items-center justify-center rounded-l-full transition-colors ${
+              hoveredBtn === "compose" ? "bg-white/10 text-foreground" : "text-foreground/85"
+            }`}
           >
             <SquarePen className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
-            onClick={toggleQuickBar}
+            onPointerEnter={() => setHoveredBtn("chat")}
+            onPointerLeave={() => setHoveredBtn((cur) => (cur === "chat" ? null : cur))}
+            onClick={(e) => {
+              setHoveredBtn(null);
+              toggleQuickBar(e);
+            }}
             title={quickBarOpen ? "Hide Chat" : "Open Chat"}
-            className={`flex h-7 w-9 items-center justify-center transition-colors hover:bg-white/10 ${
-              quickBarOpen
-                ? "bg-primary/20 text-primary hover:text-primary"
+            className={`flex h-7 w-9 items-center justify-center transition-colors ${
+              hoveredBtn === "chat"
+                ? "bg-white/10 text-primary"
                 : status === "thinking"
                   ? "text-brand"
                   : status === "error"
                     ? "text-destructive"
-                    : "text-foreground/85 hover:text-foreground"
+                    : "text-foreground/85"
             }`}
           >
             <AudioLines className={`h-3.5 w-3.5 ${status === "thinking" ? "animate-pulse" : ""}`} />
           </button>
           <button
             type="button"
+            onPointerEnter={() => setHoveredBtn("home")}
+            onPointerLeave={() => setHoveredBtn((cur) => (cur === "home" ? null : cur))}
             onPointerDown={(e) => {
               if (e.button !== 0) return;
               e.stopPropagation();
+              e.currentTarget.blur();
+              setHoveredBtn(null);
               homePointerHandledRef.current = true;
               void handleToggleMainWindow();
             }}
-            onClick={() => {
+            onClick={(e) => {
+              e.currentTarget.blur();
+              setHoveredBtn(null);
               if (homePointerHandledRef.current) {
                 homePointerHandledRef.current = false;
                 return;
@@ -1043,10 +1072,12 @@ export function PetOverlay() {
               void handleToggleMainWindow();
             }}
             title={mainAppOpen ? "Hide Main App (Home)" : "Open Main App (Home)"}
-            className={`flex h-7 w-9 items-center justify-center rounded-r-full transition-colors hover:bg-white/10 ${
-              mainAppOpen
-                ? "bg-primary/20 text-primary hover:text-primary"
-                : "text-foreground/85 hover:text-primary"
+            className={`flex h-7 w-9 items-center justify-center rounded-r-full transition-colors ${
+              hoveredBtn === "home"
+                ? "bg-white/10 text-primary"
+                : mainAppOpen
+                  ? "text-primary"
+                  : "text-foreground/85"
             }`}
           >
             <Home className="h-3.5 w-3.5" />
@@ -1087,8 +1118,8 @@ export function PetOverlay() {
         </form>
       )}
 
-      {/* Bottom: Compact Status Pill - Always shown when in collapsed mode */}
-      {!expanded && (
+      {/* Bottom: Compact Status Pill - Shown when collapsed & floating (hidden while docked at Pet Home) */}
+      {!expanded && !atHome && (
         <button
           type="button"
           onClick={() => setWindowExpanded(true)}
@@ -1108,10 +1139,28 @@ export function PetOverlay() {
       {expanded && (
         <div
           ref={chatBoxRef}
+          onDragOver={(e) => {
+            e.preventDefault();
+            if (!dragOver) setDragOver(true);
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+              setDragOver(false);
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+              void handleDropFiles(e.dataTransfer.files);
+            }
+          }}
           className={`relative flex min-h-0 w-full flex-1 flex-row overflow-hidden rounded-2xl border bg-[#202020]/95 text-foreground backdrop-blur-xl transition-shadow duration-500 ${
-            status === "thinking" || status === "streaming" || status === "waiting"
-              ? "border-primary/40 shadow-[0_0_28px_-6px_rgba(54,181,186,0.45)]"
-              : "border-white/12 shadow-2xl"
+            dragOver
+              ? "border-primary ring-2 ring-primary/50"
+              : status === "thinking" || status === "streaming" || status === "waiting"
+                ? "border-primary/40 shadow-[0_0_28px_-6px_rgba(54,181,186,0.45)]"
+                : "border-white/12 shadow-2xl"
           }`}
         >
           {/* Left Sidebar: New Chat + Session History */}
@@ -1325,7 +1374,11 @@ export function PetOverlay() {
             {messages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-1 text-center text-muted-foreground">
                 <p className="font-medium text-foreground">Chat with Web2AI</p>
-                <p className="text-[11px]">Ready on {selectedModel}</p>
+                <p className="text-[11px]">
+                  {selectedModelMeta.isSupported
+                    ? `Ready on ${selectedModel}`
+                    : "Add an active profile in Profiles to start chatting"}
+                </p>
               </div>
             ) : (
               messages.map((msg, msgIndex) => {
@@ -1460,34 +1513,95 @@ export function PetOverlay() {
                         void handleSend();
                       }
                     }}
-                    placeholder={`Ask ${selectedModelMeta.name} anything...`}
+                    placeholder={
+                      selectedModelMeta.isSupported
+                        ? `Ask ${selectedModelMeta.name} anything...`
+                        : "Add an active profile in Profiles to chat..."
+                    }
                     className="max-h-28 min-h-[54px] w-full resize-none bg-transparent text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/75 focus:outline-none"
                   />
                 </div>
                 <div className="flex items-center justify-between gap-2 border-t border-white/8 px-2.5 py-1.5">
                   <div className="flex min-w-0 items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={sending}
-                      onClick={() => fileInputRef.current?.click()}
-                      title="Upload image (or paste image)"
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-muted-foreground transition-colors hover:border-primary/60 hover:text-foreground disabled:opacity-40"
-                    >
-                      <ImagePlus className="h-3.5 w-3.5" />
-                    </button>
+                    <div ref={attachMenuRef} className="relative">
+                      <button
+                        type="button"
+                        disabled={sending}
+                        onClick={() => setAttachMenuOpen((v) => !v)}
+                        title="Add image or screen snip"
+                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-40 ${
+                          attachMenuOpen
+                            ? "border-primary/60 bg-primary/15 text-primary"
+                            : "border-white/10 bg-white/5 text-muted-foreground hover:border-primary/60 hover:text-foreground"
+                        }`}
+                      >
+                        <Wrench className="h-3.5 w-3.5" />
+                      </button>
+
+                      {attachMenuOpen && (
+                        <div className="absolute bottom-full left-0 z-50 mb-1.5 w-40 overflow-hidden rounded-xl border border-white/15 bg-[#1e1e1e]/98 p-1 shadow-2xl backdrop-blur-xl">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAttachMenuOpen(false);
+                              fileInputRef.current?.click();
+                            }}
+                            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-foreground/90 transition-colors hover:bg-white/10"
+                          >
+                            <ImagePlus className="h-3.5 w-3.5 text-primary" />
+                            <span>Upload image</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAttachMenuOpen(false);
+                              void handleSnipScreen();
+                            }}
+                            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-foreground/90 transition-colors hover:bg-white/10"
+                          >
+                            <Scissors className="h-3.5 w-3.5 text-primary" />
+                            <span>Snip Screen</span>
+                          </button>
+                          <div className="my-1 border-t border-white/10" />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPersonaEnabled((v) => !v);
+                              setAttachMenuOpen(false);
+                            }}
+                            className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-foreground/90 transition-colors hover:bg-white/10"
+                          >
+                            <span className="flex items-center gap-2">
+                              <Sparkles className="h-3.5 w-3.5 text-primary" />
+                              <span>Pet Persona</span>
+                            </span>
+                            <span
+                              className={`text-[10px] font-semibold ${
+                                personaEnabled ? "text-primary" : "text-muted-foreground"
+                              }`}
+                            >
+                              {personaEnabled ? "ON" : "OFF"}
+                            </span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     <div ref={modelMenuRef} className="relative">
                       <button
                         type="button"
+                        disabled={!hasAnyActiveProfile}
                         onClick={() => setModelMenuOpen((v) => !v)}
-                        title="Select model"
-                        className="flex h-7 max-w-[195px] items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] text-foreground transition-colors hover:border-white/25 hover:bg-white/10"
+                        title={hasAnyActiveProfile ? "Select model" : "No active profile"}
+                        className="flex h-7 max-w-[195px] items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] text-foreground transition-colors hover:border-white/25 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-white/10 disabled:hover:bg-white/5"
                       >
                         <img
                           src={selectedModelMeta.iconSrc}
                           alt={selectedModelMeta.provider}
                           className="h-3.5 w-3.5 shrink-0"
                         />
-                        <span className="truncate font-medium">{selectedModelMeta.name}</span>
+                        <span className="truncate font-medium">
+                          {hasAnyActiveProfile ? selectedModelMeta.name : "No profile"}
+                        </span>
                         <ChevronUp
                           className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${
                             modelMenuOpen ? "rotate-180" : ""
@@ -1537,7 +1651,7 @@ export function PetOverlay() {
                                   </div>
                                   {!meta.isSupported ? (
                                     <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
-                                      Soon
+                                      {meta.disabledLabel}
                                     </span>
                                   ) : isActive ? (
                                     <Check className="h-3.5 w-3.5 shrink-0 text-primary" />
@@ -1556,7 +1670,11 @@ export function PetOverlay() {
                     </span>
                     <button
                       type="button"
-                      disabled={sending || (!input.trim() && attachedImages.length === 0)}
+                      disabled={
+                        sending ||
+                        !selectedModelMeta.isSupported ||
+                        (!input.trim() && attachedImages.length === 0)
+                      }
                       onClick={() => void handleSend()}
                       className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm transition-all hover:opacity-90 disabled:opacity-35"
                       title="Send (Enter)"

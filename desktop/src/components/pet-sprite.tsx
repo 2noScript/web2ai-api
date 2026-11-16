@@ -66,6 +66,7 @@ interface PetSpriteProps {
   petId: PetId;
   status: PetStatus;
   size?: "sm" | "md" | "lg";
+  customAvatarUrl?: string;
 }
 
 function renderEyes(status: PetStatus, accent: string, visorY = 11) {
@@ -687,7 +688,7 @@ function ShibaSvg({ status, accent }: { status: PetStatus; accent: string }) {
   );
 }
 
-export function PetSprite({ petId, status, size = "lg" }: PetSpriteProps) {
+export function PetSprite({ petId, status, size = "lg", customAvatarUrl }: PetSpriteProps) {
   const sizeClass =
     size === "sm" ? "h-12 w-12" : size === "md" ? "h-16 w-16" : "h-20 w-20";
 
@@ -789,11 +790,21 @@ export function PetSprite({ petId, status, size = "lg" }: PetSpriteProps) {
       )}
 
       <div className={`relative ${sizeClass} ${motionClass}`}>
-        {petId === "fox" && <FoxSvg status={status} accent={accent} />}
-        {petId === "bot" && <BotSvg status={status} accent={accent} />}
-        {petId === "cat" && <CatSvg status={status} accent={accent} />}
-        {petId === "owl" && <OwlSvg status={status} accent={accent} />}
-        {petId === "shiba" && <ShibaSvg status={status} accent={accent} />}
+        {customAvatarUrl ? (
+          <img
+            src={customAvatarUrl}
+            alt="Custom Pet"
+            className="h-full w-full rounded-xl object-contain drop-shadow-md"
+          />
+        ) : (
+          <>
+            {petId === "fox" && <FoxSvg status={status} accent={accent} />}
+            {petId === "bot" && <BotSvg status={status} accent={accent} />}
+            {petId === "cat" && <CatSvg status={status} accent={accent} />}
+            {petId === "owl" && <OwlSvg status={status} accent={accent} />}
+            {petId === "shiba" && <ShibaSvg status={status} accent={accent} />}
+          </>
+        )}
       </div>
     </div>
   );
