@@ -46,9 +46,9 @@ const FEATURES = [
   },
   {
     icon: Database,
-    title: "SQLite Persistence via Diesel",
+    title: "Local History & Sessions",
     description:
-      "Profiles, API keys, virtual chat sessions, Pet Store selection, and pet chat history are stored locally in SQLite.",
+      "Profiles, API keys, chat sessions, Pet Store selection, and pet chat history are saved locally on your device.",
   },
   {
     icon: KeyRound,
@@ -58,9 +58,9 @@ const FEATURES = [
   },
   {
     icon: ShieldCheck,
-    title: "Rust Core & Signed Auto-Updates",
+    title: "Lightweight & Auto-Updating",
     description:
-      "Embedded Axum + Tokio server inside a lightweight Tauri v2 desktop app with one-click signed updates from GitHub Releases.",
+      "Fast native desktop app with a built-in local gateway and automatic background updates.",
   },
 ];
 
@@ -113,16 +113,15 @@ export default function HomePage() {
             <div className="flex flex-col items-start gap-6">
               <Badge className="gap-1.5">
                 <Cpu className="h-3 w-3" />
-                Rust + Tauri v2 · Open Source
+                Desktop AI Gateway · Open Source
               </Badge>
               <h1 className="max-w-3xl text-4xl font-bold tracking-tight sm:text-5xl">
                 Turn DeepSeek into an{" "}
                 <span className="text-primary">OpenAI-Compatible</span> Local Gateway
               </h1>
               <p className="max-w-2xl text-base leading-relaxed text-muted-foreground">
-                Web2AI API Desktop bundles an embedded Rust Axum server, Diesel SQLite persistence,
-                multi-profile load balancing, and a floating Codex-style Desktop Pet in a single
-                native app.
+                Web2AI API Desktop bundles a local OpenAI-compatible gateway, multi-profile load
+                balancing, saved chat history, and a floating Desktop Pet in a single native app.
               </p>
               <HeroDownloadAction />
             </div>
@@ -165,7 +164,7 @@ export default function HomePage() {
                 <div className="text-sm font-semibold">Floating Desktop Pet</div>
                 <p className="mt-1 text-xs text-muted-foreground">
                   5 pixel-art companions (Guitarist Fox, Vocalist Bot, Flutist Neko, Maestro Owl,
-                  Drummer Shiba) with live chat &amp; SQLite history.
+                  Drummer Shiba) with live chat &amp; local history.
                 </p>
               </div>
             </div>
@@ -278,7 +277,7 @@ export default function HomePage() {
 client = OpenAI(base_url="http://127.0.0.1:8088/v1", api_key="local")
 resp = client.chat.completions.create(
     model="deepseek:deepseek-reasoner",
-    messages=[{"role": "user", "content": "Explain Rust lifetimes simply."}],
+    messages=[{"role": "user", "content": "Summarize today's tasks in 3 bullet points."}],
 )
 print(resp.choices[0].message.content)`}
             </pre>
@@ -299,7 +298,7 @@ print(resp.choices[0].message.content)`}
 
       <footer className="border-t border-border bg-muted/40 py-6">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-4 px-6 text-xs text-muted-foreground">
-          <span>Web2AI API Desktop · Built with Rust, Tauri v2 &amp; React</span>
+          <span>Web2AI API Desktop · Open-Source Local AI Gateway</span>
           <a
             href={REPO_URL}
             target="_blank"

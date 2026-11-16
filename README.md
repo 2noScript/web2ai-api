@@ -6,6 +6,14 @@
 
 **Web2AI API** is a desktop application and local **OpenAI-compatible API gateway** (`http://127.0.0.1:8088`) supporting **DeepSeek**, **Gemini**, and **Meta AI**, with multi-profile Round-Robin load balancing, sticky session continuity, streaming, and Vision support.
 
+## Supported Providers
+
+| Logo | Provider | Status | Auth | Features |
+| :---: | --- | :---: | --- | --- |
+| <img src="desktop/public/providers/deepseek.svg" width="24" height="24" alt="DeepSeek" /> | **DeepSeek** | ✅ Completed | `token` | Streaming, Reasoning (`deepseek-reasoner`), Sticky Sessions |
+| <img src="desktop/public/providers/gemini.svg" width="24" height="24" alt="Gemini" /> | **Google Gemini** | 🚧 In Progress | `cookie` | Streaming, Vision (`image_url`), Sticky Sessions |
+| <img src="desktop/public/providers/metaai.svg" width="24" height="24" alt="Meta AI" /> | **Meta AI** | 🚧 In Progress | `cookie` | Streaming, Sticky Sessions |
+
 ---
 
 ## Quick Start
@@ -20,15 +28,13 @@ bun run dev
 
 ---
 
-## Screenshots
-
-### Desktop Gateway & API Playground
+## Desktop Gateway & API Playground
 
 | Provider Profiles | API Playground |
 |---|---|
 | ![Provider Profiles](docs/images/app-main.png) | ![API Playground](docs/images/app-chat.png) |
 
-### Pet Store & Floating Desktop Pet
+## Pet Store & Floating Desktop Pet
 
 | Pet Store (5 Pixel-Art Companions) | Floating Pet Chat |
 |---|---|

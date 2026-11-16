@@ -15,6 +15,7 @@ import {
   detectVisitorPlatform,
   fetchLatestRelease,
   formatBytes,
+  formatDownloadCount,
   type LatestReleaseInfo,
   type PlatformKey,
 } from "@/lib/releases";
@@ -81,6 +82,8 @@ export function HeroDownloadAction() {
         ? "Download for Linux"
         : "Download for macOS";
 
+  const totalDownloadsLabel = formatDownloadCount(release?.totalDownloads);
+
   return (
     <div className="flex flex-wrap items-center gap-3">
       <a
@@ -103,6 +106,13 @@ export function HeroDownloadAction() {
       >
         All Platforms
       </a>
+      {totalDownloadsLabel ? (
+        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Download className="h-3.5 w-3.5 text-primary" />
+          <span className="font-semibold text-foreground">{totalDownloadsLabel}</span>{" "}
+          {release?.totalDownloads === 1 ? "download" : "downloads"}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -114,41 +124,58 @@ export function DownloadsGrid() {
     void fetchLatestRelease().then(setRelease);
   }, []);
 
+  const totalDownloadsLabel = formatDownloadCount(release?.totalDownloads);
+
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      {PLATFORM_CARDS.map((card) => {
-        const asset = release?.assets[card.key];
-        const sizeLabel = formatBytes(asset?.size);
-        const Icon = card.icon;
-        return (
-          <Card key={card.key} className="flex flex-col justify-between">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15 text-primary">
-                  <Icon className="h-4 w-4" />
+    <div className="space-y-4">
+      {release ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <Badge variant="secondary" className="font-mono text-[11px]">
+            Latest {release.tagName}
+          </Badge>
+          {totalDownloadsLabel ? (
+            <span>
+              · <span className="font-semibold text-foreground">{totalDownloadsLabel}</span>{" "}
+              total {release.totalDownloads === 1 ? "download" : "downloads"} across all releases
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {PLATFORM_CARDS.map((card) => {
+          const asset = release?.assets[card.key];
+          const sizeLabel = formatBytes(asset?.size);
+          const Icon = card.icon;
+          return (
+            <Card key={card.key} className="flex flex-col justify-between">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15 text-primary">
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <Badge variant="outline" className="font-mono text-[11px]">
+                    {card.ext}
+                  </Badge>
                 </div>
-                <Badge variant="outline" className="font-mono text-[11px]">
-                  {card.ext}
-                </Badge>
-              </div>
-              <CardTitle className="pt-2 text-sm">{card.label}</CardTitle>
-              <CardDescription className="text-xs">{card.subtitle}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <a
-                href={asset?.browser_download_url ?? release?.htmlUrl ?? RELEASES_LATEST_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:border-primary/60 hover:bg-secondary/80"
-              >
-                <Download className="h-3.5 w-3.5" />
-                {asset ? `Download (${sizeLabel ?? card.ext})` : "View on GitHub Releases"}
-                <ExternalLink className="h-3 w-3 opacity-60" />
-              </a>
-            </CardContent>
-          </Card>
-        );
-      })}
+                <CardTitle className="pt-2 text-sm">{card.label}</CardTitle>
+                <CardDescription className="text-xs">{card.subtitle}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <a
+                  href={asset?.browser_download_url ?? release?.htmlUrl ?? RELEASES_LATEST_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:border-primary/60 hover:bg-secondary/80"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  {asset ? `Download (${sizeLabel ?? card.ext})` : "View on GitHub Releases"}
+                  <ExternalLink className="h-3 w-3 opacity-60" />
+                </a>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }

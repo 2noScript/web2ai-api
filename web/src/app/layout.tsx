@@ -10,7 +10,7 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "Web2AI API — OpenAI-Compatible Local AI Gateway & Desktop Pet",
   description:
-    "Open-source Rust + Tauri v2 desktop gateway turning DeepSeek into an OpenAI-compatible local API with multi-profile load balancing, SQLite persistence, and an interactive floating Desktop Pet.",
+    "Open-source desktop AI gateway turning DeepSeek into an OpenAI-compatible local API with multi-profile load balancing, local history, and an interactive floating Desktop Pet.",
 };
 
 export default function RootLayout({
