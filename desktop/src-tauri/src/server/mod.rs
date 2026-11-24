@@ -2093,4 +2093,132 @@ mod tests {
 
         let _ = std::fs::remove_file(tmp);
     }
+
+    #[tokio::test]
+    async fn failover_40003_puts_profile_in_cooldown_without_disabling_it() {
+        struct FailoverMockProvider;
+
+        #[async_trait::async_trait]
+        impl crate::providers::Provider for FailoverMockProvider {
+            fn id(&self) -> &'static str {
+                "deepseek"
+            }
+
+            fn error_policy(&self) -> crate::providers::ProviderErrorPolicy {
+                crate::providers::ProviderErrorPolicy {
+                    cooldown_keywords: &["\"code\":40003", "invalid_token"],
+                    auth_failure_keywords: &["invalid token"],
+                    non_retryable_keywords: &[],
+                }
+            }
+
+            fn models(&self) -> Vec<crate::openai::ModelObject> {
+                vec![crate::openai::ModelObject::new(
+                    "deepseek-chat",
+                    "deepseek",
+                    "Mock",
+                )]
+            }
+
+            async fn chat_completions(
+                &self,
+                credentials: &crate::providers::ProviderCredentials,
+                request: &ChatCompletionRequest,
+                _session_data: &mut serde_json::Map<String, serde_json::Value>,
+                _attachments: &[crate::session::ImageAttachment],
+            ) -> Result<crate::openai::ChatCompletionResponse, crate::providers::ProviderError> {
+                if credentials.token.as_deref() == Some("tok_spam") {
+                    return Err(crate::providers::ProviderError::Other(
+                        r#"create_chat_session error: {"code":40003,"data":null,"msg":"INVALID_TOKEN"}"#
+                            .to_string(),
+                    ));
+                }
+                Ok(crate::openai::ChatCompletionResponse::simple(
+                    request.model.clone(),
+                    "recovered-from-profile-2",
+                    None,
+                ))
+            }
+
+            async fn chat_completions_stream(
+                &self,
+                _credentials: &crate::providers::ProviderCredentials,
+                _request: &ChatCompletionRequest,
+                _session_data: &serde_json::Map<String, serde_json::Value>,
+                _attachments: &[crate::session::ImageAttachment],
+            ) -> Result<crate::providers::ProviderStream, crate::providers::ProviderError> {
+                unreachable!()
+            }
+        }
+
+        let tmp = std::env::temp_dir().join(format!(
+            "web2ai_failover_40003_{}.db",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let db = Arc::new(Database::open(&tmp).unwrap());
+        let p1 = db
+            .create_profile(CreateProfileInput {
+                provider_type: "deepseek".to_string(),
+                name: "spam-prof".to_string(),
+                token: Some("tok_spam".to_string()),
+                cookie: None,
+                is_active: Some(true),
+            })
+            .unwrap();
+        let _p2 = db
+            .create_profile(CreateProfileInput {
+                provider_type: "deepseek".to_string(),
+                name: "healthy-prof".to_string(),
+                token: Some("tok_healthy".to_string()),
+                cookie: None,
+                is_active: Some(true),
+            })
+            .unwrap();
+        let api_key = db.create_api_key("test").unwrap();
+
+        let state = AppState {
+            db: db.clone(),
+            registry: Arc::new(ProviderRegistry::with_providers(vec![Arc::new(
+                FailoverMockProvider,
+            )])),
+            load_balancer: Arc::new(ProfileLoadBalancer::new()),
+            session_manager: Arc::new(VirtualSessionManager::new()),
+            app_handle: None,
+        };
+        let app = build_router(state);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", api_key.key))
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "deepseek:deepseek-chat",
+                            "messages": [{"role": "user", "content": "hi"}]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["choices"][0]["message"]["content"],
+            "recovered-from-profile-2"
+        );
+
+        // Profile 1 must remain active (cooldown only, NOT permanently disabled)
+        let profiles = db.list_profiles_by_type("deepseek").unwrap();
+        let p1_after = profiles.into_iter().find(|p| p.id == p1.id).unwrap();
+        assert!(p1_after.is_active);
+
+        let _ = std::fs::remove_file(tmp);
+    }
 }

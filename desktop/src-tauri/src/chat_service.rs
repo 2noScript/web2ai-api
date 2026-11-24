@@ -329,8 +329,9 @@ pub async fn execute_chat(
                 }
                 Err(err) => {
                     let err_str = err.to_string();
-                    if ProfileLoadBalancer::is_retryable_error(&err_str) {
-                        let is_auth = ProfileLoadBalancer::is_auth_failure(&err_str);
+                    let policy = provider.error_policy();
+                    if ProfileLoadBalancer::is_retryable_error_for(policy, &err_str) {
+                        let is_auth = ProfileLoadBalancer::is_auth_failure_for(policy, &err_str);
                         load_balancer.handle_profile_failure(
                             &db,
                             &profile.id,
@@ -494,8 +495,9 @@ pub async fn execute_stream(
             }
             Err(e) => {
                 let err_str = e.to_string();
-                if ProfileLoadBalancer::is_retryable_error(&err_str) {
-                    let is_auth = ProfileLoadBalancer::is_auth_failure(&err_str);
+                let policy = provider.error_policy();
+                if ProfileLoadBalancer::is_retryable_error_for(policy, &err_str) {
+                    let is_auth = ProfileLoadBalancer::is_auth_failure_for(policy, &err_str);
                     load_balancer.handle_profile_failure(
                         &db,
                         &profile.id,

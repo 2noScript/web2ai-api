@@ -45,11 +45,25 @@ pub enum ProviderError {
     NotImplemented(&'static str),
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProviderErrorPolicy {
+    /// Temporary throttling/rate-limit/spam errors: trigger cooldown + immediate failover without disabling the profile.
+    pub cooldown_keywords: &'static [&'static str],
+    /// Permanent auth/credential errors: deactivate the profile and failover.
+    pub auth_failure_keywords: &'static [&'static str],
+    /// Errors that must NOT trigger profile cooldown or deactivation.
+    pub non_retryable_keywords: &'static [&'static str],
+}
+
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn id(&self) -> &'static str;
 
     fn models(&self) -> Vec<ModelObject>;
+
+    fn error_policy(&self) -> ProviderErrorPolicy {
+        ProviderErrorPolicy::default()
+    }
 
     async fn chat_completions(
         &self,

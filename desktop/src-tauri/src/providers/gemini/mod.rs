@@ -322,6 +322,14 @@ impl Provider for GeminiProvider {
         "gemini"
     }
 
+    fn error_policy(&self) -> crate::providers::ProviderErrorPolicy {
+        crate::providers::ProviderErrorPolicy {
+            cooldown_keywords: &["40300", "missing_header"],
+            auth_failure_keywords: &["invalid cookie", "invalid_cookie"],
+            non_retryable_keywords: &["session is not authenticated"],
+        }
+    }
+
     fn models(&self) -> Vec<ModelObject> {
         vec![
             ModelObject::new(

@@ -6,8 +6,9 @@ use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::db::{Database, Profile};
+use crate::providers::ProviderErrorPolicy;
 
-const RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(45);
+const RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(30);
 
 fn auth_401_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -166,32 +167,30 @@ impl ProfileLoadBalancer {
     }
 
     pub fn is_auth_failure(err: &str) -> bool {
+        Self::is_auth_failure_for(ProviderErrorPolicy::default(), err)
+    }
+
+    pub fn is_auth_failure_for(policy: ProviderErrorPolicy, err: &str) -> bool {
         let msg = err.to_lowercase();
-        let non_auth_keywords = [
-            "session is not authenticated",
-            "40300",
-            "missing_header",
-            "being generated",
-            "please try again later",
-            "too frequent",
+        let generic_non_auth = [
             "rate limit",
+            "rate_limit",
             "too many requests",
+            "too_many_requests",
             "challenge",
             "pow",
         ];
-        if non_auth_keywords.iter().any(|kw| msg.contains(kw)) {
+        if generic_non_auth.iter().any(|kw| msg.contains(kw))
+            || policy.cooldown_keywords.iter().any(|kw| msg.contains(kw))
+            || policy.non_retryable_keywords.iter().any(|kw| msg.contains(kw))
+        {
             return false;
         }
 
-        let auth_keywords = [
-            "unauthorized",
-            "unauthenticated",
-            "invalid token",
-            "expired token",
-            "token expired",
-            "invalid cookie",
-        ];
-        if auth_keywords.iter().any(|kw| msg.contains(kw)) {
+        let generic_auth = ["unauthorized", "unauthenticated"];
+        if generic_auth.iter().any(|kw| msg.contains(kw))
+            || policy.auth_failure_keywords.iter().any(|kw| msg.contains(kw))
+        {
             return true;
         }
 
@@ -199,25 +198,26 @@ impl ProfileLoadBalancer {
     }
 
     pub fn is_retryable_error(err: &str) -> bool {
+        Self::is_retryable_error_for(ProviderErrorPolicy::default(), err)
+    }
+
+    pub fn is_retryable_error_for(policy: ProviderErrorPolicy, err: &str) -> bool {
         let msg = err.to_lowercase();
-        if msg.contains("session is not authenticated") {
+        if policy.non_retryable_keywords.iter().any(|kw| msg.contains(kw)) {
             return false;
         }
-        let keywords = [
+        let generic_retryable = [
             "unauthorized",
             "unauthenticated",
-            "invalid token",
-            "token expired",
-            "expired token",
-            "invalid cookie",
             "rate limit",
+            "rate_limit",
             "too many requests",
-            "too frequent",
-            "being generated",
-            "please try again later",
-            "40300",
+            "too_many_requests",
         ];
-        if keywords.iter().any(|kw| msg.contains(kw)) {
+        if generic_retryable.iter().any(|kw| msg.contains(kw))
+            || policy.cooldown_keywords.iter().any(|kw| msg.contains(kw))
+            || policy.auth_failure_keywords.iter().any(|kw| msg.contains(kw))
+        {
             return true;
         }
         retryable_status_regex().is_match(&msg)
@@ -230,13 +230,38 @@ mod tests {
 
     #[test]
     fn auth_failure_classification_matches_python() {
+        let ds_policy = crate::providers::ProviderErrorPolicy {
+            cooldown_keywords: &["\"code\":40003", "invalid_token", "too frequent"],
+            auth_failure_keywords: &["invalid token"],
+            non_retryable_keywords: &[],
+        };
+        let gm_policy = crate::providers::ProviderErrorPolicy {
+            cooldown_keywords: &["40300", "missing_header"],
+            auth_failure_keywords: &["invalid cookie"],
+            non_retryable_keywords: &["session is not authenticated"],
+        };
+
         assert!(ProfileLoadBalancer::is_auth_failure("HTTP 401 Unauthorized"));
-        assert!(ProfileLoadBalancer::is_auth_failure("invalid cookie"));
+        assert!(ProfileLoadBalancer::is_auth_failure_for(gm_policy, "invalid cookie"));
+        assert!(!ProfileLoadBalancer::is_auth_failure_for(
+            ds_policy,
+            r#"create_chat_session error: {"code":40003,"data":null,"msg":"INVALID_TOKEN"}"#
+        ));
+        assert!(ProfileLoadBalancer::is_retryable_error_for(
+            ds_policy,
+            r#"provider error: create_chat_session error: {"code":40003,"data":null,"msg":"INVALID_TOKEN"}"#
+        ));
         assert!(!ProfileLoadBalancer::is_auth_failure("429 Too Many Requests"));
-        assert!(!ProfileLoadBalancer::is_auth_failure(
+        assert!(!ProfileLoadBalancer::is_auth_failure_for(
+            gm_policy,
             "Session is not authenticated"
         ));
-        assert!(!ProfileLoadBalancer::is_auth_failure("40300 missing_header"));
+        assert!(!ProfileLoadBalancer::is_retryable_error_for(
+            gm_policy,
+            "Session is not authenticated"
+        ));
+        assert!(!ProfileLoadBalancer::is_auth_failure_for(gm_policy, "40300 missing_header"));
+        assert!(ProfileLoadBalancer::is_retryable_error_for(gm_policy, "40300 missing_header"));
     }
 
     fn open_temp_db(name: &str) -> Database {

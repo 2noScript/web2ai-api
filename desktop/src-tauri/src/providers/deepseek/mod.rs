@@ -579,6 +579,22 @@ impl Provider for DeepSeekProvider {
         "deepseek"
     }
 
+    fn error_policy(&self) -> crate::providers::ProviderErrorPolicy {
+        crate::providers::ProviderErrorPolicy {
+            cooldown_keywords: &[
+                "\"code\":40003",
+                "\"code\": 40003",
+                "invalid_token",
+                "too frequent",
+                "too_frequent",
+                "being generated",
+                "please try again later",
+            ],
+            auth_failure_keywords: &["invalid token", "expired token", "token expired"],
+            non_retryable_keywords: &[],
+        }
+    }
+
     fn models(&self) -> Vec<ModelObject> {
         vec![
             ModelObject::new(
@@ -629,6 +645,12 @@ impl Provider for DeepSeekProvider {
                         Ok(id) => (id, None),
                         Err(e) => {
                             last_err = e.to_string();
+                            if crate::load_balancer::ProfileLoadBalancer::is_retryable_error_for(
+                                self.error_policy(),
+                                &last_err,
+                            ) {
+                                return Err(e);
+                            }
                             if attempt < 2 {
                                 tokio::time::sleep(Duration::from_millis(1200)).await;
                                 continue;
@@ -642,6 +664,12 @@ impl Provider for DeepSeekProvider {
                     Ok(id) => (id, None),
                     Err(e) => {
                         last_err = e.to_string();
+                        if crate::load_balancer::ProfileLoadBalancer::is_retryable_error_for(
+                            self.error_policy(),
+                            &last_err,
+                        ) {
+                            return Err(e);
+                        }
                         continue;
                     }
                 }
@@ -658,6 +686,12 @@ impl Provider for DeepSeekProvider {
                 Ok(c) => c,
                 Err(e) => {
                     last_err = e.to_string();
+                    if crate::load_balancer::ProfileLoadBalancer::is_retryable_error_for(
+                        self.error_policy(),
+                        &last_err,
+                    ) {
+                        return Err(e);
+                    }
                     if attempt < 2 {
                         tokio::time::sleep(Duration::from_millis(1200)).await;
                         continue;

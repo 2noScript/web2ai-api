@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Web2AI",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "identifier": "com.web2ai.desktop",
   "build": {
     "beforeDevCommand": "bun run dev",

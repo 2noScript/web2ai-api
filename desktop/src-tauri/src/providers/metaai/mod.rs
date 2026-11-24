@@ -228,6 +228,14 @@ impl Provider for MetaAIProvider {
         "metaai"
     }
 
+    fn error_policy(&self) -> crate::providers::ProviderErrorPolicy {
+        crate::providers::ProviderErrorPolicy {
+            cooldown_keywords: &[],
+            auth_failure_keywords: &["invalid cookie", "invalid_cookie"],
+            non_retryable_keywords: &[],
+        }
+    }
+
     fn models(&self) -> Vec<ModelObject> {
         vec![
             ModelObject::new("meta-ai", "meta", "Meta AI default assistant model"),
