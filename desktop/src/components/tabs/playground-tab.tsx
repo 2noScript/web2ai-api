@@ -87,12 +87,6 @@ export function PlaygroundTab({
                     <option value="deepseek" disabled={(activeProfiles.deepseek ?? 0) === 0}>
                       DeepSeek{(activeProfiles.deepseek ?? 0) === 0 ? " (No active profile)" : ""}
                     </option>
-                    <option value="gemini" disabled className="text-muted-foreground/45">
-                      Gemini (Coming soon)
-                    </option>
-                    <option value="metaai" disabled className="text-muted-foreground/45">
-                      Meta AI (Coming soon)
-                    </option>
                   </select>
                 </div>
 

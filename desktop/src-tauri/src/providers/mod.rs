@@ -76,17 +76,16 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn with_defaults() -> Result<Self, ProviderError> {
-        let mut providers: HashMap<&'static str, Arc<dyn Provider>> = HashMap::new();
-
         let ds = Arc::new(deepseek::DeepSeekProvider::new()?);
-        let gm = Arc::new(gemini::GeminiProvider::new()?);
-        let ma = Arc::new(metaai::MetaAIProvider::new()?);
+        Ok(Self::with_providers(vec![ds]))
+    }
 
-        providers.insert(ds.id(), ds);
-        providers.insert(gm.id(), gm);
-        providers.insert(ma.id(), ma);
-
-        Ok(Self { providers })
+    pub fn with_providers(list: Vec<Arc<dyn Provider>>) -> Self {
+        let mut providers: HashMap<&'static str, Arc<dyn Provider>> = HashMap::new();
+        for p in list {
+            providers.insert(p.id(), p);
+        }
+        Self { providers }
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<dyn Provider>> {
@@ -157,7 +156,7 @@ impl ProviderRegistry {
         }
 
         Err(
-            "Model must use 'provider:model' format (e.g. 'deepseek:deepseek-chat', 'gemini:gemini-3-flash')."
+            "Model must use 'provider:model' format (e.g. 'deepseek:deepseek-chat')."
                 .to_string(),
         )
     }

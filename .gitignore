@@ -24,6 +24,10 @@ cookies.txt
 
 # Dependencies & Build Artifacts
 node_modules/
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
 /build/
 /dist/
 desktop/dist/

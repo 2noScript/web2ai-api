@@ -187,7 +187,23 @@ async fn openapi_handler() -> impl IntoResponse {
                             "type": "array",
                             "items": { "$ref": "#/components/schemas/ChatMessage" }
                         },
-                        "stream": { "type": "boolean", "default": false }
+                        "stream": { "type": "boolean", "default": false },
+                        "response_format": {
+                            "type": "object",
+                            "description": "OpenAI-compatible structured output constraint: text, json_object, or json_schema",
+                            "properties": {
+                                "type": { "type": "string", "enum": ["text", "json_object", "json_schema"] },
+                                "json_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": { "type": "string" },
+                                        "description": { "type": "string" },
+                                        "schema": { "type": "object" },
+                                        "strict": { "type": "boolean" }
+                                    }
+                                }
+                            }
+                        }
                     }
                 },
                 "CreateProfileInput": {
@@ -683,8 +699,8 @@ fn is_auth_disabled() -> bool {
     if matches!(require_key.as_str(), "false" | "0") {
         return true;
     }
-    // Default to true in local desktop mode unless explicitly enabled
-    std::env::var("DISABLE_AUTH").is_err() && std::env::var("REQUIRE_API_KEY").is_err()
+    // In release/production builds, API key authentication is REQUIRED by default.
+    false
 }
 
 fn extract_api_key(headers: &HeaderMap) -> Option<String> {
@@ -769,6 +785,20 @@ async fn run_chat_completions(
         }
         k
     };
+
+    if let Err(msg) = request.parse_response_format() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "message": msg,
+                    "type": "invalid_request_error",
+                    "code": "invalid_response_format"
+                }
+            })),
+        )
+            .into_response();
+    }
 
     let api_key_hash = Some(Database::get_api_key_hash(&effective_key));
     let header_sid = headers
@@ -1206,7 +1236,9 @@ mod tests {
             .unwrap();
         let models_text = String::from_utf8_lossy(&models_bytes);
         assert!(models_text.contains("deepseek:deepseek-chat"));
-        assert!(models_text.contains("gemini:gemini-3-flash"));
+        assert!(models_text.contains("deepseek:deepseek-reasoner"));
+        assert!(!models_text.contains("gemini:"));
+        assert!(!models_text.contains("metaai:"));
 
         let res_bad_model = app
             .oneshot(
@@ -1318,5 +1350,640 @@ mod tests {
         println!("STREAM ({s_status}):\n{s_text}");
         assert_eq!(s_status, StatusCode::OK, "Stream failed: {s_text}");
         assert!(s_text.contains("[DONE]"), "Missing [DONE] marker in SSE");
+    }
+
+    struct MockDeepSeekProvider {
+        prompts: std::sync::Mutex<Vec<String>>,
+        chat_replies: std::sync::Mutex<std::collections::VecDeque<String>>,
+        stream_events: std::sync::Mutex<Vec<crate::providers::StreamEvent>>,
+    }
+
+    impl MockDeepSeekProvider {
+        fn new(
+            replies: Vec<&str>,
+            stream_events: Vec<crate::providers::StreamEvent>,
+        ) -> Self {
+            Self {
+                prompts: std::sync::Mutex::new(Vec::new()),
+                chat_replies: std::sync::Mutex::new(
+                    replies.into_iter().map(|s| s.to_string()).collect(),
+                ),
+                stream_events: std::sync::Mutex::new(stream_events),
+            }
+        }
+
+        fn recorded_prompts(&self) -> Vec<String> {
+            self.prompts.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::Provider for MockDeepSeekProvider {
+        fn id(&self) -> &'static str {
+            "deepseek"
+        }
+
+        fn models(&self) -> Vec<crate::openai::ModelObject> {
+            vec![crate::openai::ModelObject::new(
+                "deepseek-chat",
+                "deepseek",
+                "Mock DeepSeek Chat",
+            )]
+        }
+
+        async fn chat_completions(
+            &self,
+            _credentials: &crate::providers::ProviderCredentials,
+            request: &ChatCompletionRequest,
+            session_data: &mut serde_json::Map<String, serde_json::Value>,
+            _attachments: &[crate::session::ImageAttachment],
+        ) -> Result<crate::openai::ChatCompletionResponse, crate::providers::ProviderError> {
+            let prompt = request
+                .messages
+                .last()
+                .and_then(|m| m.content.as_ref())
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            self.prompts.lock().unwrap().push(prompt);
+            session_data.insert(
+                "deepseek_chat_session_id".to_string(),
+                serde_json::Value::String("mock_ds_sess_1".to_string()),
+            );
+            let reply = self
+                .chat_replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| "{}".to_string());
+            Ok(crate::openai::ChatCompletionResponse::simple(
+                request.model.clone(),
+                reply,
+                None,
+            ))
+        }
+
+        async fn chat_completions_stream(
+            &self,
+            _credentials: &crate::providers::ProviderCredentials,
+            request: &ChatCompletionRequest,
+            _session_data: &serde_json::Map<String, serde_json::Value>,
+            _attachments: &[crate::session::ImageAttachment],
+        ) -> Result<crate::providers::ProviderStream, crate::providers::ProviderError> {
+            let prompt = request
+                .messages
+                .last()
+                .and_then(|m| m.content.as_ref())
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            self.prompts.lock().unwrap().push(prompt);
+            let events: Vec<Result<crate::providers::StreamEvent, crate::providers::ProviderError>> =
+                self.stream_events
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .into_iter()
+                    .map(Ok)
+                    .collect();
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    fn setup_mock_app(
+        mock: Arc<MockDeepSeekProvider>,
+    ) -> (axum::Router, Arc<Database>, String, std::path::PathBuf) {
+        let tmp = std::env::temp_dir().join(format!(
+            "web2ai_struct_test_{}.db",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let db = Arc::new(Database::open(&tmp).unwrap());
+        db.create_profile(CreateProfileInput {
+            provider_type: "deepseek".to_string(),
+            name: "test-ds".to_string(),
+            token: Some("tok_test".to_string()),
+            cookie: None,
+            is_active: Some(true),
+        })
+        .unwrap();
+        let api_key = db.create_api_key("test-client").unwrap();
+        let registry = Arc::new(ProviderRegistry::with_providers(vec![mock]));
+        let state = AppState {
+            db: db.clone(),
+            registry,
+            load_balancer: Arc::new(ProfileLoadBalancer::new()),
+            session_manager: Arc::new(VirtualSessionManager::new()),
+            app_handle: None,
+        };
+        (build_router(state), db, api_key.key, tmp)
+    }
+
+    #[tokio::test]
+    async fn openai_response_format_invalid_returns_400() {
+        let mock = Arc::new(MockDeepSeekProvider::new(vec![], vec![]));
+        let (app, _db, api_key, tmp) = setup_mock_app(mock);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "deepseek:deepseek-chat",
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "response_format": { "type": "yaml_object" }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["type"], "invalid_request_error");
+        assert_eq!(body["error"]["code"], "invalid_response_format");
+
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[tokio::test]
+    async fn openai_response_format_json_object_repairs_markdown_and_keeps_clean_history() {
+        let mock = Arc::new(MockDeepSeekProvider::new(
+            vec!["Dưới đây là JSON:\n```json\n{user: 'Alice', score: 99, active: True,}\n```\nChúc vui!"],
+            vec![],
+        ));
+        let (app, db, api_key, tmp) = setup_mock_app(mock.clone());
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .header("x-session-id", "sess_clean_hist")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "deepseek:deepseek-chat",
+                            "messages": [{"role": "user", "content": "Extract Alice"}],
+                            "response_format": { "type": "json_object" }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body["id"].as_str().unwrap().starts_with("chatcmpl-"));
+        assert_eq!(body["object"], "chat.completion");
+        assert_eq!(body["choices"][0]["message"]["role"], "assistant");
+        assert_eq!(body["choices"][0]["finish_reason"], "stop");
+
+        let content_str = body["choices"][0]["message"]["content"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(content_str).unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::json!({ "user": "Alice", "score": 99, "active": true })
+        );
+
+        let prompts = mock.recorded_prompts();
+        assert_eq!(prompts.len(), 1);
+        assert!(prompts[0].contains("[STRICT OUTPUT CONTRACT — JSON OBJECT ONLY]"));
+
+        // Verify SQLite virtual session history was NOT polluted by the invisible prompt wrapper
+        let saved = db.get_session_data("sess_clean_hist").unwrap().unwrap();
+        let hist = saved["history"].as_array().unwrap();
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0]["content"], "Extract Alice");
+        assert_eq!(hist[1]["content"], content_str);
+
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[tokio::test]
+    async fn openai_response_format_json_schema_self_corrects_on_retry() {
+        let mock = Arc::new(MockDeepSeekProvider::new(
+            vec![
+                // Attempt 1 misses required `price`
+                r#"```json
+                {"title": "Rust Book"}
+                ```"#,
+                // Attempt 2 (correction retry) provides complete valid JSON
+                r#"{"title": "Rust Book", "price": 29.99}"#,
+            ],
+            vec![],
+        ));
+        let (app, _db, api_key, tmp) = setup_mock_app(mock.clone());
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "deepseek:deepseek-chat",
+                            "messages": [{"role": "user", "content": "Book info"}],
+                            "response_format": {
+                                "type": "json_schema",
+                                "json_schema": {
+                                    "name": "book",
+                                    "strict": true,
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "title": { "type": "string" },
+                                            "price": { "type": "number" }
+                                        },
+                                        "required": ["title", "price"],
+                                        "additionalProperties": false
+                                    }
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(body["choices"][0]["message"]["content"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(parsed, serde_json::json!({ "title": "Rust Book", "price": 29.99 }));
+
+        let prompts = mock.recorded_prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[1].contains("[JSON OUTPUT CORRECTION]"));
+
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[tokio::test]
+    async fn openai_response_format_unrecoverable_schema_error_does_not_save_bad_history() {
+        let mock = Arc::new(MockDeepSeekProvider::new(
+            vec!["Cannot comply", "Still cannot comply"],
+            vec![],
+        ));
+        let (app, db, api_key, tmp) = setup_mock_app(mock);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .header("x-session-id", "sess_fail_hist")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "deepseek:deepseek-chat",
+                            "messages": [{"role": "user", "content": "Give schema"}],
+                            "response_format": {
+                                "type": "json_schema",
+                                "json_schema": {
+                                    "name": "item",
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": { "id": { "type": "integer" } },
+                                        "required": ["id"]
+                                    }
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["code"], "invalid_json_output");
+        assert!(db.get_session_data("sess_fail_hist").unwrap().is_none());
+
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[tokio::test]
+    async fn openai_response_format_streaming_sse_repairs_dirty_chunks() {
+        use crate::providers::StreamEvent;
+        let mock = Arc::new(MockDeepSeekProvider::new(
+            vec![],
+            vec![
+                StreamEvent::Reasoning("Checking schema...".to_string()),
+                StreamEvent::Content("Sure!\n```json\n".to_string()),
+                StreamEvent::Content("{city: 'Hanoi', ".to_string()),
+                StreamEvent::Content("pop: 8500000,}\n```".to_string()),
+                StreamEvent::SessionMeta({
+                    let mut m = serde_json::Map::new();
+                    m.insert(
+                        "deepseek_chat_session_id".to_string(),
+                        serde_json::Value::String("ds_stream_1".to_string()),
+                    );
+                    m
+                }),
+            ],
+        ));
+        let (app, db, api_key, tmp) = setup_mock_app(mock);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .header("x-session-id", "sess_stream_json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "deepseek:deepseek-chat",
+                            "stream": true,
+                            "messages": [{"role": "user", "content": "City info"}],
+                            "response_format": {
+                                "type": "json_schema",
+                                "json_schema": {
+                                    "name": "city_info",
+                                    "strict": true,
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "city": { "type": "string" },
+                                            "pop": { "type": "integer" }
+                                        },
+                                        "required": ["city", "pop"],
+                                        "additionalProperties": false
+                                    }
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let content_type = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(content_type.contains("text/event-stream"));
+
+        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let sse_text = String::from_utf8_lossy(&bytes);
+
+        let mut content_acc = String::new();
+        let mut saw_reasoning = false;
+        let mut saw_stop = false;
+        let mut saw_done = false;
+
+        for line in sse_text.lines() {
+            let Some(payload) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let payload = payload.trim();
+            if payload.is_empty() {
+                continue;
+            }
+            if payload == "[DONE]" {
+                saw_done = true;
+                continue;
+            }
+            let chunk: serde_json::Value = serde_json::from_str(payload).unwrap();
+            assert_eq!(chunk["object"], "chat.completion.chunk");
+            let choice = &chunk["choices"][0];
+            if choice["delta"]["reasoning_content"].as_str().is_some() {
+                saw_reasoning = true;
+            }
+            if let Some(c) = choice["delta"]["content"].as_str() {
+                content_acc.push_str(c);
+            }
+            if choice["finish_reason"] == "stop" {
+                saw_stop = true;
+            }
+        }
+
+        assert!(saw_reasoning);
+        assert!(saw_stop);
+        assert!(saw_done);
+        let parsed: serde_json::Value = serde_json::from_str(&content_acc).unwrap();
+        assert_eq!(parsed, serde_json::json!({ "city": "Hanoi", "pop": 8500000 }));
+
+        let saved = db.get_session_data("sess_stream_json").unwrap().unwrap();
+        assert_eq!(saved["deepseek_chat_session_id"], "ds_stream_1");
+        assert_eq!(saved["history"][1]["content"], content_acc);
+
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[tokio::test]
+    async fn openai_multi_turn_session_switches_between_text_and_json_cleanly() {
+        let mock = Arc::new(MockDeepSeekProvider::new(
+            vec![
+                "Hi! What do you need?",
+                "```json\n{\"name\": \"Web2AI\"}\n```",
+                "Sure, here is a plain text summary.",
+            ],
+            vec![],
+        ));
+        let (app, _db, api_key, tmp) = setup_mock_app(mock.clone());
+
+        // Turn 1: regular text
+        let r1 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .header("x-session-id", "sess_mix")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "deepseek:deepseek-chat",
+                            "messages": [{"role": "user", "content": "Hello"}]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), StatusCode::OK);
+
+        // Turn 2: json_object
+        let r2 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .header("x-session-id", "sess_mix")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "deepseek:deepseek-chat",
+                            "messages": [{"role": "user", "content": "Give project name"}],
+                            "response_format": { "type": "json_object" }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r2.status(), StatusCode::OK);
+
+        // Turn 3: back to plain text (no response_format)
+        let r3 = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .header("x-session-id", "sess_mix")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "deepseek:deepseek-chat",
+                            "messages": [{"role": "user", "content": "Summarize normally"}]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r3.status(), StatusCode::OK);
+
+        let prompts = mock.recorded_prompts();
+        assert_eq!(prompts.len(), 3);
+        assert!(!prompts[0].contains("[STRICT OUTPUT CONTRACT"));
+        assert!(prompts[1].contains("[STRICT OUTPUT CONTRACT — JSON OBJECT ONLY]"));
+        assert!(!prompts[2].contains("[STRICT OUTPUT CONTRACT"));
+
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[tokio::test]
+    async fn openai_real_tcp_http_end_to_end_json_and_stream() {
+        use crate::providers::StreamEvent;
+
+        let mock = Arc::new(MockDeepSeekProvider::new(
+            vec!["```json\n{\"ok\": true, \"items\": [\"a\", \"b\"]}\n```"],
+            vec![
+                StreamEvent::Content("Here is JSON:\n```json\n".to_string()),
+                StreamEvent::Content("{status: 'ready', count: 3,}\n```".to_string()),
+            ],
+        ));
+        let (app, _db, api_key, tmp) = setup_mock_app(mock);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = wreq::Client::new();
+        let base_url = format!("http://{addr}/v1");
+
+        // 1. Non-stream json_object via real HTTP socket
+        let resp = client
+            .post(format!("{base_url}/chat/completions"))
+            .bearer_auth(&api_key)
+            .json(&serde_json::json!({
+                "model": "deepseek:deepseek-chat",
+                "messages": [{"role": "user", "content": "Return ok and items"}],
+                "response_format": { "type": "json_object" }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let sid = resp
+            .headers()
+            .get("x-session-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(!sid.is_empty());
+        let json_body: serde_json::Value = resp.json().await.unwrap();
+        let content = json_body["choices"][0]["message"]["content"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(content).unwrap();
+        assert_eq!(parsed, serde_json::json!({ "ok": true, "items": ["a", "b"] }));
+
+        // 2. Stream json_schema via real HTTP socket
+        let stream_resp = client
+            .post(format!("{base_url}/chat/completions"))
+            .bearer_auth(&api_key)
+            .header("x-session-id", &sid)
+            .json(&serde_json::json!({
+                "model": "deepseek:deepseek-chat",
+                "stream": true,
+                "messages": [{"role": "user", "content": "Status"}],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "status_payload",
+                        "strict": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "status": { "type": "string" },
+                                "count": { "type": "integer" }
+                            },
+                            "required": ["status", "count"],
+                            "additionalProperties": false
+                        }
+                    }
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stream_resp.status(), StatusCode::OK);
+        let raw_sse = stream_resp.text().await.unwrap();
+        assert!(raw_sse.contains("data: [DONE]"));
+
+        let mut merged = String::new();
+        for line in raw_sse.lines() {
+            let Some(data) = line.strip_prefix("data:") else { continue; };
+            let data = data.trim();
+            if data.is_empty() || data == "[DONE]" { continue; }
+            let chunk: serde_json::Value = serde_json::from_str(data).unwrap();
+            if let Some(c) = chunk["choices"][0]["delta"]["content"].as_str() {
+                merged.push_str(c);
+            }
+        }
+        let parsed_stream: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(parsed_stream, serde_json::json!({ "status": "ready", "count": 3 }));
+
+        server_task.abort();
+        let _ = std::fs::remove_file(tmp);
     }
 }

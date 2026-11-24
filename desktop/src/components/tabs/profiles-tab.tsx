@@ -76,7 +76,7 @@ export function ProfilesTab({
       </div>
 
       <div className="flex shrink-0 items-center gap-1.5">
-        {(["all", "deepseek", "gemini", "metaai"] as const).map((tab) => (
+        {(["all", "deepseek"] as const).map((tab) => (
           <button
             key={tab}
             type="button"

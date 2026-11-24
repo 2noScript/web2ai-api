@@ -1,0 +1,11 @@
+{
+  "name": "web2ai-openai-sdk-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test --timeout 60000"
+  },
+  "dependencies": {
+    "openai": "^7.63.0"
+  }
+}

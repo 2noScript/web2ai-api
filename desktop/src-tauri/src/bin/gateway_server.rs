@@ -55,7 +55,12 @@ async fn main() {
         app_handle: None,
     };
 
-    let addr: SocketAddr = "127.0.0.1:8088".parse().unwrap();
+    let host = std::env::var("WEB2AI_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port: u16 = std::env::var("WEB2AI_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8088);
+    let addr: SocketAddr = format!("{host}:{port}").parse().unwrap();
     let (_tx, rx) = watch::channel(false);
     println!("Rust API server listening on http://{addr}");
     run_http_server(addr, state, rx)

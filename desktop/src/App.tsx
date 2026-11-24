@@ -404,15 +404,36 @@ export default function App() {
     setTestResult(null);
   };
 
+  const resolveInternalApiKey = async (): Promise<string | null> => {
+    const active = keys.find((k) => k.is_active)?.key;
+    if (active) return active;
+    try {
+      const stRes = await fetch(apiUrl("/v1/pet/state"));
+      if (stRes.ok) {
+        const stData = await stRes.json();
+        if (stData?.pet_api_key) {
+          void fetchKeys();
+          return String(stData.pet_api_key);
+        }
+      }
+    } catch {
+      // Ignore fallback lookup errors
+    }
+    return null;
+  };
+
   const runProfileTest = async () => {
     if (!testingProfile) return;
     setTestRunning(true);
     setTestResult(null);
     const start = performance.now();
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const authKey = await resolveInternalApiKey();
+      if (authKey) headers.Authorization = `Bearer ${authKey}`;
       const res = await fetch(apiUrl("/v1/chat/completions"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           model: `${testingProfile.type}:${testModel}`,
           messages: [{ role: "user", content: testPrompt }],
@@ -485,6 +506,8 @@ export default function App() {
 
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const authKey = await resolveInternalApiKey();
+      if (authKey) headers.Authorization = `Bearer ${authKey}`;
       if (pgSessionId.trim()) headers["X-Session-Id"] = pgSessionId.trim();
 
       const res = await fetch(apiUrl("/v1/chat/completions"), {
@@ -746,18 +769,6 @@ export default function App() {
                   {health?.deepseek_active_profiles ?? 0}
                 </span>
               </div>
-              <div className="flex justify-between">
-                <span>Gemini</span>
-                <span className="font-mono text-foreground">
-                  {health?.gemini_active_profiles ?? 0}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Meta AI</span>
-                <span className="font-mono text-foreground">
-                  {health?.metaai_active_profiles ?? 0}
-                </span>
-              </div>
             </div>
             <div className="mt-2.5 border-t border-border/60 pt-2">
               <button
@@ -904,8 +915,6 @@ export default function App() {
                       className="h-8 w-full rounded-md border border-border bg-input px-2.5 text-xs outline-none"
                     >
                       <option value="deepseek">DeepSeek</option>
-                      <option value="gemini">Gemini</option>
-                      <option value="metaai">Meta AI</option>
                     </select>
                   </div>
                 )}

@@ -64,9 +64,6 @@ export function PetOverlay() {
   const [models, setModels] = useState<string[]>([
     "deepseek:deepseek-chat",
     "deepseek:deepseek-reasoner",
-    "gemini:gemini-3-flash",
-    "gemini:gemini-3-pro",
-    "metaai:llama-3.3-70b",
   ]);
   const [selectedModel, setSelectedModel] = useState("deepseek:deepseek-chat");
   const [activeProviders, setActiveProviders] = useState<Record<string, number>>({

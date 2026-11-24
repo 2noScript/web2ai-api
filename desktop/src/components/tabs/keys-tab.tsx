@@ -1,4 +1,4 @@
-import type { FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { Check, Copy, Plus, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,16 @@ export function KeysTab({
   onDeleteKey,
   maskSecret,
 }: KeysTabProps) {
+  const [copiedRowKey, setCopiedRowKey] = useState<string | null>(null);
+
+  const handleCopyRow = (keyValue: string) => {
+    onCopyKey(keyValue);
+    setCopiedRowKey(keyValue);
+    window.setTimeout(() => {
+      setCopiedRowKey((prev) => (prev === keyValue ? null : prev));
+    }, 1500);
+  };
+
   return (
     <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col gap-4">
       <div className="shrink-0">
@@ -122,13 +132,28 @@ export function KeysTab({
                       {k.created_at.slice(0, 19).replace("T", " ")}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={() => onDeleteKey(k.key)}
-                      >
-                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                      </Button>
+                      <div className="inline-flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          title="Copy API key"
+                          onClick={() => handleCopyRow(k.key)}
+                        >
+                          {copiedRowKey === k.key ? (
+                            <Check className="h-3.5 w-3.5 text-emerald-500" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5 text-muted-foreground" />
+                          )}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          title="Delete API key"
+                          onClick={() => onDeleteKey(k.key)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))

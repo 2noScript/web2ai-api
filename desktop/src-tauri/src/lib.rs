@@ -6,6 +6,7 @@ pub mod openai;
 pub mod providers;
 pub mod server;
 pub mod session;
+pub mod structured_output;
 
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;

@@ -1,6 +1,6 @@
 [package]
 name = "web2ai-desktop"
-version = "0.1.5"
+version = "0.1.6"
 description = "Web2AI API Desktop Application"
 authors = ["Web2AI"]
 edition = "2021"
@@ -44,6 +44,8 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 regex = "1"
+jsonrepair-rs = "0.2.7"
+jsonschema = { version = "0.63", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -52,3 +54,12 @@ objc2-foundation = { version = "0.3", features = ["NSData"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+# Keep local build artifacts small while preserving source locations in backtraces.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false

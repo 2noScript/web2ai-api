@@ -8,11 +8,14 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::db::Database;
 use crate::http_client::build_browser_client;
 use crate::load_balancer::{LoadBalancerError, ProfileLoadBalancer};
-use crate::openai::{ChatCompletionRequest, ChatCompletionResponse};
+use crate::openai::{ChatCompletionRequest, ChatCompletionResponse, ResponseFormat};
 use crate::providers::{ProviderCredentials, ProviderError, ProviderRegistry, StreamEvent};
 use crate::session::{
     append_assistant_message, extract_images, extract_text, format_prompt_with_history,
     sync_and_get_history,
+};
+use crate::structured_output::{
+    build_json_prompt, build_json_retry_prompt, repair_and_validate_json,
 };
 
 #[derive(Debug)]
@@ -165,6 +168,16 @@ pub async fn execute_chat(
     request: &ChatCompletionRequest,
     session_data: &mut Map<String, Value>,
 ) -> Result<ChatCompletionResponse, ChatServiceError> {
+    let response_format = request.parse_response_format().map_err(|msg| {
+        ChatServiceError::new(
+            400,
+            msg,
+            "invalid_request_error",
+            "invalid_response_format",
+        )
+    })?;
+    let json_format = response_format.as_ref().filter(|f| f.is_json_mode());
+
     let provider = registry.get(provider_id).ok_or_else(|| {
         ChatServiceError::new(
             404,
@@ -234,10 +247,14 @@ pub async fn execute_chat(
         let mut should_failover = false;
         for attempt in 0..2 {
             let has_sess = has_provider_session(provider_id, session_data) && attempt == 0;
-            let effective_prompt = if has_sess {
+            let base_prompt = if has_sess {
                 raw_prompt.clone()
             } else {
                 format_prompt_with_history(&history, &raw_prompt)
+            };
+            let effective_prompt = match json_format {
+                Some(fmt) => build_json_prompt(&base_prompt, fmt),
+                None => base_prompt,
             };
 
             let mut eff_req = request.clone();
@@ -249,7 +266,62 @@ pub async fn execute_chat(
                 .chat_completions(&creds, &eff_req, session_data, &attachments)
                 .await
             {
-                Ok(resp) => {
+                Ok(mut resp) => {
+                    if let Some(fmt) = json_format {
+                        let raw_content = resp
+                            .choices
+                            .first()
+                            .map(|c| c.message.content.clone())
+                            .unwrap_or_default();
+                        match repair_and_validate_json(&raw_content, fmt) {
+                            Ok(clean_json) => {
+                                if let Some(first) = resp.choices.first_mut() {
+                                    first.message.content = clean_json;
+                                }
+                            }
+                            Err(first_err) => {
+                                let retry_prompt =
+                                    build_json_retry_prompt(fmt, &raw_content, &first_err.message);
+                                let mut retry_req = request.clone();
+                                if let Some(last) = retry_req.messages.last_mut() {
+                                    last.content = Some(Value::String(retry_prompt));
+                                }
+                                let mut retry_resp = provider
+                                    .chat_completions(&creds, &retry_req, session_data, &attachments)
+                                    .await
+                                    .map_err(|e| {
+                                        ChatServiceError::new(
+                                            502,
+                                            format!(
+                                                "JSON validation failed ({}) and retry errored: {e}",
+                                                first_err.message
+                                            ),
+                                            "server_error",
+                                            first_err.code,
+                                        )
+                                    })?;
+                                let retry_raw = retry_resp
+                                    .choices
+                                    .first()
+                                    .map(|c| c.message.content.clone())
+                                    .unwrap_or_default();
+                                let clean_retry = repair_and_validate_json(&retry_raw, fmt)
+                                    .map_err(|retry_err| {
+                                        ChatServiceError::new(
+                                            502,
+                                            retry_err.message,
+                                            "server_error",
+                                            retry_err.code,
+                                        )
+                                    })?;
+                                if let Some(first) = retry_resp.choices.first_mut() {
+                                    first.message.content = clean_retry;
+                                }
+                                resp = retry_resp;
+                            }
+                        }
+                    }
+
                     if let Some(choice) = resp.choices.first() {
                         append_assistant_message(session_data, &choice.message.content);
                     }
@@ -327,6 +399,17 @@ pub async fn execute_stream(
     api_key_hash: Option<String>,
     mut session_data: Map<String, Value>,
 ) -> Result<ReceiverStream<String>, ChatServiceError> {
+    let response_format: Option<ResponseFormat> =
+        request.parse_response_format().map_err(|msg| {
+            ChatServiceError::new(
+                400,
+                msg,
+                "invalid_request_error",
+                "invalid_response_format",
+            )
+        })?;
+    let json_format = response_format.clone().filter(|f| f.is_json_mode());
+
     let provider = registry.get(&provider_id).ok_or_else(|| {
         ChatServiceError::new(
             404,
@@ -385,10 +468,14 @@ pub async fn execute_stream(
         };
 
         let has_sess = has_provider_session(&provider_id, &session_data);
-        let effective_prompt = if has_sess {
+        let base_prompt = if has_sess {
             raw_prompt.clone()
         } else {
             format_prompt_with_history(&history, &raw_prompt)
+        };
+        let effective_prompt = match json_format.as_ref() {
+            Some(fmt) => build_json_prompt(&base_prompt, fmt),
+            None => base_prompt,
         };
 
         let mut eff_req = request.clone();
@@ -457,27 +544,39 @@ pub async fn execute_stream(
 
     let (tx, rx) = mpsc::channel::<String>(64);
     let model_name = request.model.clone();
+    let creds_for_retry = ProviderCredentials {
+        profile_id: Some(profile.id.clone()),
+        token: profile.token.clone(),
+        cookie: profile.cookie.clone(),
+    };
+    let request_for_retry = request.clone();
+    let attachments_for_retry = attachments.clone();
+    let provider_for_retry = provider.clone();
 
     tokio::spawn(async move {
         let resp_id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
         let mut is_first = true;
         let mut accumulated = String::new();
+        let mut stream_failed = false;
+        let buffer_for_json = json_format.is_some();
 
         while let Some(item) = provider_stream.next().await {
             match item {
                 Ok(StreamEvent::Content(delta)) => {
                     accumulated.push_str(&delta);
-                    let sse = make_stream_chunk(
-                        &model_name,
-                        Some(&delta),
-                        None,
-                        &resp_id,
-                        is_first,
-                        false,
-                    );
-                    is_first = false;
-                    if tx.send(sse).await.is_err() {
-                        break;
+                    if !buffer_for_json {
+                        let sse = make_stream_chunk(
+                            &model_name,
+                            Some(&delta),
+                            None,
+                            &resp_id,
+                            is_first,
+                            false,
+                        );
+                        is_first = false;
+                        if tx.send(sse).await.is_err() {
+                            return;
+                        }
                     }
                 }
                 Ok(StreamEvent::Reasoning(delta)) => {
@@ -491,7 +590,7 @@ pub async fn execute_stream(
                     );
                     is_first = false;
                     if tx.send(sse).await.is_err() {
-                        break;
+                        return;
                     }
                 }
                 Ok(StreamEvent::SessionMeta(meta)) => {
@@ -500,10 +599,80 @@ pub async fn execute_stream(
                     }
                 }
                 Err(e) => {
+                    stream_failed = true;
                     let _ = tx
                         .send(make_error_chunk(&e.to_string(), "server_error", "stream_error"))
                         .await;
                     break;
+                }
+            }
+        }
+
+        if stream_failed {
+            let _ = tx.send(STREAM_END.to_string()).await;
+            return;
+        }
+
+        if let Some(ref fmt) = json_format {
+            let clean_result = match repair_and_validate_json(&accumulated, fmt) {
+                Ok(clean) => Ok(clean),
+                Err(first_err) => {
+                    let retry_prompt =
+                        build_json_retry_prompt(fmt, &accumulated, &first_err.message);
+                    let mut retry_req = request_for_retry.clone();
+                    retry_req.stream = false;
+                    if let Some(last) = retry_req.messages.last_mut() {
+                        last.content = Some(Value::String(retry_prompt));
+                    }
+                    match provider_for_retry
+                        .chat_completions(
+                            &creds_for_retry,
+                            &retry_req,
+                            &mut session_data,
+                            &attachments_for_retry,
+                        )
+                        .await
+                    {
+                        Ok(retry_resp) => {
+                            let retry_raw = retry_resp
+                                .choices
+                                .first()
+                                .map(|c| c.message.content.clone())
+                                .unwrap_or_default();
+                            repair_and_validate_json(&retry_raw, fmt).map_err(|e| (e.code, e.message))
+                        }
+                        Err(e) => Err((
+                            first_err.code,
+                            format!(
+                                "JSON validation failed ({}) and retry errored: {e}",
+                                first_err.message
+                            ),
+                        )),
+                    }
+                }
+            };
+
+            match clean_result {
+                Ok(clean_json) => {
+                    accumulated = clean_json.clone();
+                    let sse = make_stream_chunk(
+                        &model_name,
+                        Some(&clean_json),
+                        None,
+                        &resp_id,
+                        is_first,
+                        false,
+                    );
+                    if tx.send(sse).await.is_err() {
+                        return;
+                    }
+                }
+                Err((err_code, err_msg)) => {
+                    let _ = tx
+                        .send(make_error_chunk(&err_msg, "server_error", err_code))
+                        .await;
+                    let _ = tx.send(STREAM_END.to_string()).await;
+                    return;
                 }
             }
         }

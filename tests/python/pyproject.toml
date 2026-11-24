@@ -1,0 +1,10 @@
+[project]
+name = "web2ai-openai-sdk-tests"
+version = "0.1.0"
+description = "Python OpenAI SDK integration tests for web2ai-api"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.60.0",
+    "pydantic>=2.0.0",
+    "pytest>=8.0.0",
+]
