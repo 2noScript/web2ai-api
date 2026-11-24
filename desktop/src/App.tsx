@@ -206,6 +206,14 @@ export default function App() {
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
 
+  // In-app delete confirmation modal (native window.confirm is blocked in macOS WKWebView)
+  const [pendingDelete, setPendingDelete] = useState<
+    | { kind: "profiles"; items: Profile[] }
+    | { kind: "keys"; keys: string[] }
+    | null
+  >(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
   // Live Gateway Logs & Pet Traffic Reaction
   const [gatewayLogs, setGatewayLogs] = useState<GatewayRequestLog[]>([]);
   const [logFilter, setLogFilter] = useState<"all" | "ok" | "error">("all");
@@ -270,9 +278,11 @@ export default function App() {
   const [pgReasoning, setPgReasoning] = useState("");
   const [pgError, setPgError] = useState<string | null>(null);
 
+  const listVersionRef = useRef(0);
+
   const fetchHealth = async (): Promise<boolean> => {
     try {
-      const res = await fetch(apiUrl("/health"));
+      const res = await fetch(apiUrl("/health"), { cache: "no-store" });
       if (!res.ok) return false;
       setHealth(await res.json());
       return true;
@@ -283,9 +293,10 @@ export default function App() {
   };
 
   const fetchProfiles = async () => {
+    const ver = listVersionRef.current;
     try {
-      const res = await fetch(apiUrl("/v1/profiles"));
-      if (res.ok) {
+      const res = await fetch(apiUrl("/v1/profiles"), { cache: "no-store" });
+      if (res.ok && listVersionRef.current === ver) {
         const data = await res.json();
         setProfiles(data.profiles ?? []);
       }
@@ -295,9 +306,10 @@ export default function App() {
   };
 
   const fetchKeys = async () => {
+    const ver = listVersionRef.current;
     try {
-      const res = await fetch(apiUrl("/v1/keys"));
-      if (res.ok) {
+      const res = await fetch(apiUrl("/v1/keys"), { cache: "no-store" });
+      if (res.ok && listVersionRef.current === ver) {
         const data = await res.json();
         setKeys(data.keys ?? []);
       }
@@ -391,10 +403,13 @@ export default function App() {
     await refreshAll();
   };
 
-  const handleDeleteProfile = async (p: Profile) => {
-    if (!confirm(`Delete profile "${p.name}"?`)) return;
-    await fetch(apiUrl(`/v1/profiles/${p.id}`), { method: "DELETE" });
-    await refreshAll();
+  const handleDeleteProfile = (p: Profile) => {
+    setPendingDelete({ kind: "profiles", items: [p] });
+  };
+
+  const handleDeleteProfiles = (items: Profile[]) => {
+    if (items.length === 0) return;
+    setPendingDelete({ kind: "profiles", items });
   };
 
   const openTestModal = (p: Profile) => {
@@ -404,11 +419,13 @@ export default function App() {
     setTestResult(null);
   };
 
-  const resolveInternalApiKey = async (): Promise<string | null> => {
-    const active = keys.find((k) => k.is_active)?.key;
-    if (active) return active;
+  const resolveInternalApiKey = async (forceRefresh = false): Promise<string | null> => {
+    if (!forceRefresh) {
+      const active = keys.find((k) => k.is_active)?.key;
+      if (active) return active;
+    }
     try {
-      const stRes = await fetch(apiUrl("/v1/pet/state"));
+      const stRes = await fetch(apiUrl("/v1/pet/state"), { cache: "no-store" });
       if (stRes.ok) {
         const stData = await stRes.json();
         if (stData?.pet_api_key) {
@@ -428,18 +445,25 @@ export default function App() {
     setTestResult(null);
     const start = performance.now();
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      const authKey = await resolveInternalApiKey();
-      if (authKey) headers.Authorization = `Bearer ${authKey}`;
-      const res = await fetch(apiUrl("/v1/chat/completions"), {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          model: `${testingProfile.type}:${testModel}`,
-          messages: [{ role: "user", content: testPrompt }],
-          stream: false,
-        }),
-      });
+      let authKey = await resolveInternalApiKey();
+      const sendTestReq = (keyToUse: string | null) => {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (keyToUse) headers.Authorization = `Bearer ${keyToUse}`;
+        return fetch(apiUrl("/v1/chat/completions"), {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model: `${testingProfile.type}:${testModel}`,
+            messages: [{ role: "user", content: testPrompt }],
+            stream: false,
+          }),
+        });
+      };
+      let res = await sendTestReq(authKey);
+      if (res.status === 401) {
+        authKey = await resolveInternalApiKey(true);
+        if (authKey) res = await sendTestReq(authKey);
+      }
       const latencyMs = Math.round(performance.now() - start);
       const data = await res.json();
       if (!res.ok) {
@@ -484,10 +508,72 @@ export default function App() {
     }
   };
 
-  const handleDeleteKey = async (keyId: string) => {
-    if (!confirm("Delete this API key?")) return;
-    const res = await fetch(apiUrl(`/v1/keys/${keyId}`), { method: "DELETE" });
-    if (res.ok) await fetchKeys();
+  const handleRenameKey = async (keyId: string, name: string): Promise<boolean> => {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    listVersionRef.current += 1;
+    const res = await fetch(apiUrl(`/v1/keys/${encodeURIComponent(keyId)}`), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: trimmed }),
+    });
+    if (!res.ok) return false;
+    setKeys((prev) => prev.map((k) => (k.key === keyId ? { ...k, name: trimmed } : k)));
+    await fetchKeys();
+    return true;
+  };
+
+  const handleDeleteKey = (keyId: string) => {
+    setPendingDelete({ kind: "keys", keys: [keyId] });
+  };
+
+  const handleDeleteKeys = (keyIds: string[]) => {
+    if (keyIds.length === 0) return;
+    setPendingDelete({ kind: "keys", keys: keyIds });
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete || deleteBusy) return;
+    setDeleteBusy(true);
+    listVersionRef.current += 1;
+    try {
+      if (pendingDelete.kind === "profiles") {
+        const deletedIds = new Set<string>();
+        await Promise.all(
+          pendingDelete.items.map(async (p) => {
+            const res = await fetch(apiUrl(`/v1/profiles/${encodeURIComponent(p.id)}`), {
+              method: "DELETE",
+            });
+            if (res.ok) deletedIds.add(p.id);
+          }),
+        );
+        if (deletedIds.size > 0) {
+          setProfiles((prev) => prev.filter((p) => !deletedIds.has(p.id)));
+        }
+        setPendingDelete(null);
+        await refreshAll();
+      } else {
+        const deletedKeys = new Set<string>();
+        await Promise.all(
+          pendingDelete.keys.map(async (k) => {
+            const res = await fetch(apiUrl(`/v1/keys/${encodeURIComponent(k)}`), {
+              method: "DELETE",
+            });
+            if (res.ok) deletedKeys.add(k);
+          }),
+        );
+        if (deletedKeys.size > 0) {
+          setKeys((prev) => prev.filter((item) => !deletedKeys.has(item.key)));
+          if (createdKey && deletedKeys.has(createdKey)) {
+            setCreatedKey(null);
+          }
+        }
+        setPendingDelete(null);
+        await fetchKeys();
+      }
+    } finally {
+      setDeleteBusy(false);
+    }
   };
 
   const copyText = async (text: string) => {
@@ -505,20 +591,26 @@ export default function App() {
     setPgError(null);
 
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      const authKey = await resolveInternalApiKey();
-      if (authKey) headers.Authorization = `Bearer ${authKey}`;
-      if (pgSessionId.trim()) headers["X-Session-Id"] = pgSessionId.trim();
-
-      const res = await fetch(apiUrl("/v1/chat/completions"), {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          model: `${pgProvider}:${pgModel}`,
-          messages: [{ role: "user", content: pgPrompt }],
-          stream: pgStream,
-        }),
-      });
+      let authKey = await resolveInternalApiKey();
+      const sendPlaygroundReq = (keyToUse: string | null) => {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (keyToUse) headers.Authorization = `Bearer ${keyToUse}`;
+        if (pgSessionId.trim()) headers["X-Session-Id"] = pgSessionId.trim();
+        return fetch(apiUrl("/v1/chat/completions"), {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model: `${pgProvider}:${pgModel}`,
+            messages: [{ role: "user", content: pgPrompt }],
+            stream: pgStream,
+          }),
+        });
+      };
+      let res = await sendPlaygroundReq(authKey);
+      if (res.status === 401) {
+        authKey = await resolveInternalApiKey(true);
+        if (authKey) res = await sendPlaygroundReq(authKey);
+      }
 
       const returnedSid = res.headers.get("x-session-id");
       if (returnedSid) setPgSessionId(returnedSid);
@@ -802,7 +894,8 @@ export default function App() {
               onToggleActive={(p) => void handleToggleActive(p)}
               onTestProfile={openTestModal}
               onEditProfile={openEditModal}
-              onDeleteProfile={(p) => void handleDeleteProfile(p)}
+              onDeleteProfile={handleDeleteProfile}
+              onDeleteProfiles={handleDeleteProfiles}
               maskSecret={maskSecret}
             />
           )}
@@ -816,7 +909,9 @@ export default function App() {
               createdKey={createdKey}
               copiedKey={copiedKey}
               onCopyKey={(text) => void copyText(text)}
-              onDeleteKey={(key) => void handleDeleteKey(key)}
+              onRenameKey={handleRenameKey}
+              onDeleteKey={handleDeleteKey}
+              onDeleteKeys={handleDeleteKeys}
               maskSecret={maskSecret}
             />
           )}
@@ -1040,6 +1135,54 @@ export default function App() {
                   {testRunning ? "Testing..." : "Run Test"}
                 </Button>
               </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {pendingDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <Card className="w-full max-w-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">
+                {pendingDelete.kind === "profiles"
+                  ? pendingDelete.items.length === 1
+                    ? "Delete Profile?"
+                    : `Delete ${pendingDelete.items.length} Profiles?`
+                  : pendingDelete.keys.length === 1
+                    ? "Delete API Key?"
+                    : `Delete ${pendingDelete.keys.length} API Keys?`}
+              </CardTitle>
+              <CardDescription className="text-xs">
+                {pendingDelete.kind === "profiles"
+                  ? pendingDelete.items.length === 1
+                    ? `Remove profile "${pendingDelete.items[0].name}"? This cannot be undone.`
+                    : `Remove ${pendingDelete.items.length} selected profiles? This cannot be undone.`
+                  : pendingDelete.keys.length === 1
+                    ? "Clients using this API key will immediately lose access."
+                    : `Remove ${pendingDelete.keys.length} selected API keys? Clients using them will immediately lose access.`}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={deleteBusy}
+                onClick={() => setPendingDelete(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                disabled={deleteBusy}
+                onClick={() => void confirmDelete()}
+              >
+                {deleteBusy ? "Deleting..." : "Delete"}
+              </Button>
             </CardContent>
           </Card>
         </div>

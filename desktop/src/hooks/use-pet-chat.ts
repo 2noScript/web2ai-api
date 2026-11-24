@@ -114,7 +114,7 @@ export function usePetChatSession(options: {
 
   const refreshPetState = useCallback(async () => {
     try {
-      const res = await fetch(apiUrl("/v1/pet/state"));
+      const res = await fetch(apiUrl("/v1/pet/state"), { cache: "no-store" });
       if (!res.ok) return;
       const data = (await res.json()) as PetStateResponse;
       if (data.selected_pet_id) {

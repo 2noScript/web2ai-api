@@ -786,30 +786,28 @@ export function PetOverlay() {
     const dbPayload = encodePetMessageContent(prompt, imagesToSend);
     void persistPetMessage(activeSid, titlePreview, selectedModel, "user", dbPayload);
 
-    let authKey = petApiKey;
-    if (!authKey) {
+    const fetchFreshPetKey = async (): Promise<string> => {
       try {
-        const stRes = await fetch(apiUrl("/v1/pet/state"));
+        const stRes = await fetch(apiUrl("/v1/pet/state"), { cache: "no-store" });
         if (stRes.ok) {
           const stData = (await stRes.json()) as PetStateResponse;
           if (stData.pet_api_key) {
-            authKey = stData.pet_api_key;
-            setPetApiKey(authKey);
+            setPetApiKey(stData.pet_api_key);
+            return stData.pet_api_key;
           }
         }
       } catch {
         // Ignore
       }
+      return "";
+    };
+
+    let authKey = petApiKey;
+    if (!authKey) {
+      authKey = await fetchFreshPetKey();
     }
 
     try {
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        "X-Session-Id": activeSid,
-      };
-      if (authKey) {
-        headers.Authorization = `Bearer ${authKey}`;
-      }
       const messageContent =
         imagesToSend.length > 0
           ? [
@@ -828,15 +826,34 @@ export function PetOverlay() {
         });
       }
       outgoingMessages.push({ role: "user", content: messageContent });
-      const res = await fetch(apiUrl("/v1/chat/completions"), {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          model: selectedModel,
-          messages: outgoingMessages,
-          stream: true,
-        }),
-      });
+
+      const sendChatRequest = (keyToUse: string) => {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "X-Session-Id": activeSid,
+        };
+        if (keyToUse) {
+          headers.Authorization = `Bearer ${keyToUse}`;
+        }
+        return fetch(apiUrl("/v1/chat/completions"), {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            model: selectedModel,
+            messages: outgoingMessages,
+            stream: true,
+          }),
+        });
+      };
+
+      let res = await sendChatRequest(authKey);
+      if (res.status === 401) {
+        const freshKey = await fetchFreshPetKey();
+        if (freshKey && freshKey !== authKey) {
+          authKey = freshKey;
+          res = await sendChatRequest(authKey);
+        }
+      }
 
       const returnedSid = res.headers.get("x-session-id");
       if (returnedSid) {

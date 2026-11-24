@@ -557,6 +557,14 @@ impl Database {
         Ok(affected > 0)
     }
 
+    pub fn rename_api_key(&self, key: &str, name: &str) -> Result<bool, DbError> {
+        let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
+        let affected = diesel::update(api_keys::table.find(key))
+            .set(api_keys::name.eq(name.trim()))
+            .execute(&mut *conn)?;
+        Ok(affected > 0)
+    }
+
     pub fn delete_api_key(&self, key: &str) -> Result<usize, DbError> {
         let mut conn = self.conn.lock().map_err(|_| DbError::Lock)?;
         Ok(diesel::delete(api_keys::table.find(key)).execute(&mut *conn)?)

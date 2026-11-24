@@ -11,7 +11,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         Html, IntoResponse, Response,
     },
-    routing::{delete, get, post, put},
+    routing::{get, patch, post, put},
     Json, Router,
 };
 use futures::StreamExt;
@@ -80,7 +80,12 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/keys", get(list_keys_handler).post(create_key_handler))
         .route("/v1/keys/revoke", post(revoke_key_handler))
-        .route("/v1/keys/{key}", delete(delete_key_handler))
+        .route(
+            "/v1/keys/{key}",
+            patch(rename_key_handler)
+                .put(rename_key_handler)
+                .delete(delete_key_handler),
+        )
         .route("/v1/models", get(list_all_models_handler))
         .route("/v1/chat/completions", post(unified_chat_completions_handler))
         .route("/v1/gateway/logs", get(get_gateway_logs_handler).delete(clear_gateway_logs_handler))
@@ -655,6 +660,39 @@ async fn revoke_key_handler(
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(json!({ "detail": "API key not found or already inactive" })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "detail": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct KeyRenameBody {
+    name: String,
+}
+
+async fn rename_key_handler(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    Json(body): Json<KeyRenameBody>,
+) -> Response {
+    let trimmed = body.name.trim();
+    if trimmed.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "detail": "API key name cannot be empty" })),
+        )
+            .into_response();
+    }
+    match state.db.rename_api_key(&key, trimmed) {
+        Ok(true) => Json(json!({ "status": "updated", "key": key, "name": trimmed })).into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "detail": "API key not found" })),
         )
             .into_response(),
         Err(e) => (
@@ -1984,6 +2022,75 @@ mod tests {
         assert_eq!(parsed_stream, serde_json::json!({ "status": "ready", "count": 3 }));
 
         server_task.abort();
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[tokio::test]
+    async fn rename_and_delete_api_key_routes_work() {
+        let mock = Arc::new(MockDeepSeekProvider::new(vec![], vec![]));
+        let (app, db, api_key, tmp) = setup_mock_app(mock);
+
+        // Empty name returns 400
+        let bad_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/keys/{api_key}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"   "}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_res.status(), StatusCode::BAD_REQUEST);
+
+        // Valid rename updates DB immediately
+        let ok_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/v1/keys/{api_key}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"cursor-prod"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok_res.status(), StatusCode::OK);
+        let keys_after_rename = db.list_api_keys().unwrap();
+        assert_eq!(keys_after_rename[0].name, "cursor-prod");
+
+        // Delete removes key from DB immediately
+        let del_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/keys/{api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del_res.status(), StatusCode::OK);
+        assert!(db.list_api_keys().unwrap().is_empty());
+
+        // Rename missing key returns 404
+        let missing_res = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/v1/keys/sk-nonexistent")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"other"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_res.status(), StatusCode::NOT_FOUND);
+
         let _ = std::fs::remove_file(tmp);
     }
 }
