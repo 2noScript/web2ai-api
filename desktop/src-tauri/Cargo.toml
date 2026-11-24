@@ -1,6 +1,6 @@
 [package]
 name = "web2ai-desktop"
-version = "0.1.8"
+version = "0.1.9"
 description = "Web2AI API Desktop Application"
 authors = ["Web2AI"]
 edition = "2021"
